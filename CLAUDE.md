@@ -59,52 +59,92 @@ Import aliases (configured in `tsconfig.web.json` + `electron.vite.config.ts`):
 
 ## How Claude controls the app
 
-The Electron window is a GUI that belongs to the human developer. Claude does **not** run `npm run dev` — that would leave a window open for the user to dismiss and tie up a background process.
+The Electron window is a GUI that belongs to the human. **Claude never runs `npm run dev`** — that would leave a window open the user has to dismiss.
 
-Instead, Claude drives the app through Playwright's Electron integration, which launches a fresh instance per test, drives it programmatically, captures screenshots/logs, and exits.
+Claude drives the app through Playwright's Electron integration: each run builds the app, launches a fresh headless instance, executes a spec, captures screenshots and logs, and exits. A full round trip is ~1–2 seconds on this machine.
 
-### The loop
+### The agent loop
 
 1. Edit code.
-2. Run `npm run test:e2e` (or a single spec: `npx playwright test e2e/smoke.spec.ts`).
-3. Read Playwright's stdout for failures, and inspect screenshots under `e2e/.artifacts/screenshots/`.
+2. Run a spec:
+   ```bash
+   # Fast iteration on a single spec (builds first, then runs only that file):
+   npx electron-vite build && npx playwright test e2e/<spec>.spec.ts
+   # Or the full suite:
+   npm run test:e2e
+   ```
+3. Observe:
+   - **Playwright stdout** (from `Bash` tool output) — test pass/fail + anything the spec `console.log`'d.
+   - **Screenshot PNGs** at `e2e/.artifacts/screenshots/<name>.png` — `Read` them to actually see the UI.
+   - **Combined log file** at `e2e/.artifacts/logs/<label>.log` — `Read` to see main stdout/stderr + renderer console + page errors, timestamped.
 4. Iterate.
 
-### Writing a one-off exploration test
+Never `npm run build` just to iterate — `npx electron-vite build` skips the tsc pass and is enough since Playwright + the next test:e2e run will catch issues. Run `npm run typecheck` at the end of a change set.
 
-When Claude needs to "see" a new screen or reproduce a bug, add a temporary spec under `e2e/` and use the `launchApp()` helper:
+### Writing an exploration spec
+
+When you need to "see" a screen or reproduce a bug, drop a scratch spec under `e2e/` using `launchApp(label)`. The label controls the log filename so the artifacts are easy to find.
 
 ```ts
 import { expect, test } from '@playwright/test'
 import { launchApp } from './helpers'
 
 test('explore settings view', async () => {
-  const { app, window, screenshot } = await launchApp()
+  const { app, window, screenshot, logPath } = await launchApp('settings-explore')
   try {
+    // Drive the UI
     await window.getByRole('button', { name: 'Settings' }).click()
-    await screenshot('settings')        // → e2e/.artifacts/screenshots/settings.png
-    // Read the PNG with the Read tool to actually "see" the UI state.
+
+    // Assert what should be there
+    await expect(window.getByText('AI provider')).toBeVisible()
+
+    // Save a screenshot — read the PNG afterwards to see the result
+    await screenshot('settings')
+
+    // Dump DOM text to stdout if you want it in Playwright's output
+    console.log('body:', await window.locator('body').innerText())
+
+    // logPath is e2e/.artifacts/logs/settings-explore.log — main + renderer logs
+    console.log('logs at', logPath)
   } finally {
     await app.close()
   }
 })
 ```
 
-Delete the exploration spec when done — it's scratch work, not a permanent test.
+**Delete the exploration spec when done.** Permanent regression tests belong alongside `smoke.spec.ts` with stable names; scratch specs don't.
 
-### Reading logs
+### What the helper gives you
 
-Playwright captures main-process stdout/stderr automatically — they print inline with test output. For renderer console logs:
+`launchApp(label?)` returns:
 
-```ts
-window.on('console', (msg) => console.log('[renderer]', msg.type(), msg.text()))
-```
+| field        | what it is                                                                         |
+| ------------ | ---------------------------------------------------------------------------------- |
+| `app`        | `ElectronApplication` — `app.close()` at the end (always in a `finally`).          |
+| `window`     | Playwright `Page` for the main window — use `getByRole`, `locator`, `evaluate`, … |
+| `screenshot` | `(name) => Promise<string>` — writes `e2e/.artifacts/screenshots/<name>.png`.      |
+| `logPath`    | Absolute path to the captured log file for this session.                           |
 
-### When to ask the human to run `npm run dev`
+The helper automatically streams into `logPath`:
+- `app.process().stdout` / `stderr` prefixed `[main stdout]` / `[main stderr]`
+- `window.on('console')` prefixed `[renderer <type>]`
+- `window.on('pageerror')` prefixed `[renderer error]`
 
-- When the user wants to manually try a feature.
-- When HMR-driven feedback is faster than the build-then-test cycle.
-- Claude should not start or kill that process.
+### Quirks (observed, not theoretical)
+
+- **`window.viewportSize()` returns `null`** for Electron windows. If you need content dimensions, use `await window.evaluate(() => ({ w: innerWidth, h: innerHeight }))`.
+- **Main-process `console.log` shows up in `[main stdout]`** in the log file, not in Playwright's test stdout. Read the log file to see it.
+- **One window per launch.** If your feature opens a second `BrowserWindow`, wait for it with `app.waitForEvent('window')` rather than `firstWindow()`.
+- **Screenshots are DOMContentLoaded-timed.** If you need a post-render capture (async data, fonts), `await expect(...).toBeVisible()` on the new content before calling `screenshot()`.
+- **`app.close()` must be in a `finally`** — a thrown assertion leaves Electron running otherwise, and subsequent runs fail with a port-in-use-style error.
+
+### When to ask the human for `npm run dev` instead
+
+- The user wants to click around manually.
+- You're iterating on fast-changing CSS/Tailwind where HMR is faster than the ~1s build loop.
+- You explicitly need DevTools open.
+
+In those cases, ask them to run it; do not start or kill it yourself.
 
 ## Adding shadcn components
 
