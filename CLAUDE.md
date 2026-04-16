@@ -63,23 +63,31 @@ The Electron window is a GUI. **Claude never runs `npm run dev`** — that's the
 
 Claude uses the **agent control server** in `agent/`: one persistent Electron instance driven by single-shot CLI commands over localhost HTTP. Think Playwright MCP, minus MCP. State (the window, renderer DOM, main process) survives between commands, so the flow is conversational, not test-at-a-time.
 
-### Starting the session
+### When to spin it up
 
-Run this **once** per session, in the background:
+Start the server the **first time** the user asks Claude to do anything involving the running app this session — clicking, looking at the UI, reproducing a bug, checking a log, filling a form, taking a screenshot. Don't start it pre-emptively for purely code-only tasks (editing, typechecking, reading the repo).
+
+### Start-or-reuse protocol
+
+**Always check first.** A previous tool call in the same session may have started it. Check before spawning a duplicate (the second one will fail on the port).
 
 ```bash
-npm run agent:serve
-# builds, launches Electron via Playwright, and listens on http://127.0.0.1:9555
-# stdout prints "[agent] ready on http://127.0.0.1:9555"
+# 1. Is it already up?
+node agent/cli.mjs status 2>/dev/null && echo "reuse" || echo "need-start"
 ```
 
-Then wait for it to answer:
+If it's not up, launch in the background (this is the Bash tool's `run_in_background: true`), then poll until ready:
 
 ```bash
+# 2. Start (as a background Bash call):
+npm run agent:serve
+# stdout will show "[agent] ready on http://127.0.0.1:9555"
+
+# 3. Block until it answers (foreground):
 until node agent/cli.mjs status 2>/dev/null; do sleep 0.5; done
 ```
 
-From then on every command is a sub-second HTTP call.
+The server dies with the Claude session. No manual cleanup needed between conversations — but do call `quit` if the user explicitly says they're done with the live app.
 
 ### Commands
 
@@ -102,21 +110,44 @@ quit                       shut the server down
 
 Selectors are Playwright selectors: CSS, `text=foo`, `button:has-text('Save')`, `role=button[name="Save"]`, etc.
 
-### The loop
+### Recipes (what to do when the user says…)
 
-1. Edit code.
-2. Rebuild so the agent sees the new code:
-   ```bash
-   npx electron-vite build && node agent/cli.mjs reload
-   ```
-3. Drive it:
-   ```bash
-   node agent/cli.mjs click "button:has-text('Settings')"
-   node agent/cli.mjs fill "input[name=email]" "me@example.com"
-   node agent/cli.mjs shot after-fill
-   ```
-4. Observe via `shot`, `text`, `html`, `eval`, `logs`.
-5. Iterate. `quit` when done.
+**"Show me the app" / "abrí la app"**
+```bash
+node agent/cli.mjs shot current      # then Read agent/.shots/current.png
+```
+
+**"Click on Settings"**
+```bash
+node agent/cli.mjs click "button:has-text('Settings')"
+node agent/cli.mjs shot after-click  # verify visually
+```
+For ambiguous text, fall back to role (`role=button[name="Settings"]`) or a specific CSS selector. If the click fails with a timeout, first try `node agent/cli.mjs html | grep -i settings` to understand what's actually rendered.
+
+**"Fill the email field with X"**
+```bash
+node agent/cli.mjs fill "input[type=email]" "user@example.com"
+node agent/cli.mjs shot filled
+```
+
+**"I changed some code, see it in the app"**
+```bash
+npx electron-vite build && node agent/cli.mjs reload
+node agent/cli.mjs shot after-change
+```
+The server doesn't watch files — no build + reload means the app keeps showing the previous build.
+
+**"Why isn't X working / what's in the console"**
+```bash
+node agent/cli.mjs logs 100          # main stdout/stderr + renderer console + pageerrors
+node agent/cli.mjs html | head -50   # DOM sanity check
+node agent/cli.mjs eval "return { path: location.pathname, errors: window.__errors }"
+```
+
+**"Walk through the onboarding flow"**
+Issue each step as a separate `click` / `fill` / `press` / `wait`, with a `shot` between steps so the user can watch progress in the chat.
+
+**After driving the UI manually for debugging:** `node agent/cli.mjs reload` to wipe DOM mutations before reporting that a feature "works."
 
 ### Quirks (verified against the live app)
 
