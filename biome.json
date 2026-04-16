@@ -6,7 +6,12 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**/*.{ts,tsx,js,jsx,json}", "*.{ts,tsx,js,json,mjs,cjs}"],
+    "includes": [
+      "src/**/*.{ts,tsx,js,jsx,json}",
+      "e2e/**/*.{ts,tsx,js,jsx,json}",
+      "*.{ts,tsx,js,json,mjs,cjs}",
+      "!e2e/.artifacts/**"
+    ],
     "ignoreUnknown": true
   },
   "formatter": {

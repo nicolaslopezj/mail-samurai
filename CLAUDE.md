@@ -45,15 +45,66 @@ Import aliases (configured in `tsconfig.web.json` + `electron.vite.config.ts`):
 
 ## Scripts
 
-| script              | purpose                                  |
-| ------------------- | ---------------------------------------- |
-| `npm run dev`       | Electron + Vite dev with HMR             |
-| `npm run lint`      | `biome check src`                        |
-| `npm run format`    | `biome format --write src`               |
-| `npm run check`     | Biome with auto-fix + organize imports   |
-| `npm run typecheck` | Node + web tsc projects                  |
-| `npm run build`     | typecheck + `electron-vite build`        |
-| `npm run build:mac` | package unsigned `.dmg`                  |
+| script                   | purpose                                          |
+| ------------------------ | ------------------------------------------------ |
+| `npm run dev`            | Electron + Vite dev with HMR (for the human)     |
+| `npm run lint`           | Biome check on `src` + `e2e`                     |
+| `npm run format`         | Biome format on `src` + `e2e`                    |
+| `npm run check`          | Biome with auto-fix + organize imports           |
+| `npm run typecheck`      | Node + web + e2e tsc projects                    |
+| `npm run build`          | typecheck + `electron-vite build`                |
+| `npm run build:mac`      | package unsigned `.dmg`                          |
+| `npm run test:e2e`       | build, then Playwright (Electron) headless       |
+| `npm run test:e2e:headed`| same, but with a visible window                  |
+
+## How Claude controls the app
+
+The Electron window is a GUI that belongs to the human developer. Claude does **not** run `npm run dev` — that would leave a window open for the user to dismiss and tie up a background process.
+
+Instead, Claude drives the app through Playwright's Electron integration, which launches a fresh instance per test, drives it programmatically, captures screenshots/logs, and exits.
+
+### The loop
+
+1. Edit code.
+2. Run `npm run test:e2e` (or a single spec: `npx playwright test e2e/smoke.spec.ts`).
+3. Read Playwright's stdout for failures, and inspect screenshots under `e2e/.artifacts/screenshots/`.
+4. Iterate.
+
+### Writing a one-off exploration test
+
+When Claude needs to "see" a new screen or reproduce a bug, add a temporary spec under `e2e/` and use the `launchApp()` helper:
+
+```ts
+import { expect, test } from '@playwright/test'
+import { launchApp } from './helpers'
+
+test('explore settings view', async () => {
+  const { app, window, screenshot } = await launchApp()
+  try {
+    await window.getByRole('button', { name: 'Settings' }).click()
+    await screenshot('settings')        // → e2e/.artifacts/screenshots/settings.png
+    // Read the PNG with the Read tool to actually "see" the UI state.
+  } finally {
+    await app.close()
+  }
+})
+```
+
+Delete the exploration spec when done — it's scratch work, not a permanent test.
+
+### Reading logs
+
+Playwright captures main-process stdout/stderr automatically — they print inline with test output. For renderer console logs:
+
+```ts
+window.on('console', (msg) => console.log('[renderer]', msg.type(), msg.text()))
+```
+
+### When to ask the human to run `npm run dev`
+
+- When the user wants to manually try a feature.
+- When HMR-driven feedback is faster than the build-then-test cycle.
+- Claude should not start or kill that process.
 
 ## Adding shadcn components
 
