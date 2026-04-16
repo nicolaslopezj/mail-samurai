@@ -1,0 +1,25 @@
+node_modules
+dist
+out
+.DS_Store
+*.log*
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+
+# OS
+Thumbs.db
+
+# Build artifacts
+release
+*.dmg
+*.snap
+*.deb
+*.AppImage
+*.exe
