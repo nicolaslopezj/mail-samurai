@@ -45,106 +45,96 @@ Import aliases (configured in `tsconfig.web.json` + `electron.vite.config.ts`):
 
 ## Scripts
 
-| script                   | purpose                                          |
-| ------------------------ | ------------------------------------------------ |
-| `npm run dev`            | Electron + Vite dev with HMR (for the human)     |
-| `npm run lint`           | Biome check on `src` + `e2e`                     |
-| `npm run format`         | Biome format on `src` + `e2e`                    |
-| `npm run check`          | Biome with auto-fix + organize imports           |
-| `npm run typecheck`      | Node + web + e2e tsc projects                    |
-| `npm run build`          | typecheck + `electron-vite build`                |
-| `npm run build:mac`      | package unsigned `.dmg`                          |
-| `npm run test:e2e`       | build, then Playwright (Electron) headless       |
-| `npm run test:e2e:headed`| same, but with a visible window                  |
+| script              | purpose                                           |
+| ------------------- | ------------------------------------------------- |
+| `npm run dev`       | Electron + Vite dev with HMR (for the human)      |
+| `npm run lint`      | Biome check on `src` + `agent`                    |
+| `npm run format`    | Biome format on `src` + `agent`                   |
+| `npm run check`     | Biome with auto-fix + organize imports            |
+| `npm run typecheck` | Node + web tsc projects                           |
+| `npm run build`     | typecheck + `electron-vite build`                 |
+| `npm run build:mac` | package unsigned `.dmg`                           |
+| `npm run agent:serve` | build + launch persistent agent-controlled Electron |
+| `npm run agent`     | run the agent CLI (`node agent/cli.mjs`)          |
 
 ## How Claude controls the app
 
-The Electron window is a GUI that belongs to the human. **Claude never runs `npm run dev`** — that would leave a window open the user has to dismiss.
+The Electron window is a GUI. **Claude never runs `npm run dev`** — that's the human's window.
 
-Claude drives the app through Playwright's Electron integration: each run builds the app, launches a fresh headless instance, executes a spec, captures screenshots and logs, and exits. A full round trip is ~1–2 seconds on this machine.
+Claude uses the **agent control server** in `agent/`: one persistent Electron instance driven by single-shot CLI commands over localhost HTTP. Think Playwright MCP, minus MCP. State (the window, renderer DOM, main process) survives between commands, so the flow is conversational, not test-at-a-time.
 
-### The agent loop
+### Starting the session
 
-1. Edit code.
-2. Run a spec:
-   ```bash
-   # Fast iteration on a single spec (builds first, then runs only that file):
-   npx electron-vite build && npx playwright test e2e/<spec>.spec.ts
-   # Or the full suite:
-   npm run test:e2e
-   ```
-3. Observe:
-   - **Playwright stdout** (from `Bash` tool output) — test pass/fail + anything the spec `console.log`'d.
-   - **Screenshot PNGs** at `e2e/.artifacts/screenshots/<name>.png` — `Read` them to actually see the UI.
-   - **Combined log file** at `e2e/.artifacts/logs/<label>.log` — `Read` to see main stdout/stderr + renderer console + page errors, timestamped.
-4. Iterate.
+Run this **once** per session, in the background:
 
-Never `npm run build` just to iterate — `npx electron-vite build` skips the tsc pass and is enough since Playwright + the next test:e2e run will catch issues. Run `npm run typecheck` at the end of a change set.
-
-### Writing an exploration spec
-
-When you need to "see" a screen or reproduce a bug, drop a scratch spec under `e2e/` using `launchApp(label)`. The label controls the log filename so the artifacts are easy to find.
-
-```ts
-import { expect, test } from '@playwright/test'
-import { launchApp } from './helpers'
-
-test('explore settings view', async () => {
-  const { app, window, screenshot, logPath } = await launchApp('settings-explore')
-  try {
-    // Drive the UI
-    await window.getByRole('button', { name: 'Settings' }).click()
-
-    // Assert what should be there
-    await expect(window.getByText('AI provider')).toBeVisible()
-
-    // Save a screenshot — read the PNG afterwards to see the result
-    await screenshot('settings')
-
-    // Dump DOM text to stdout if you want it in Playwright's output
-    console.log('body:', await window.locator('body').innerText())
-
-    // logPath is e2e/.artifacts/logs/settings-explore.log — main + renderer logs
-    console.log('logs at', logPath)
-  } finally {
-    await app.close()
-  }
-})
+```bash
+npm run agent:serve
+# builds, launches Electron via Playwright, and listens on http://127.0.0.1:9555
+# stdout prints "[agent] ready on http://127.0.0.1:9555"
 ```
 
-**Delete the exploration spec when done.** Permanent regression tests belong alongside `smoke.spec.ts` with stable names; scratch specs don't.
+Then wait for it to answer:
 
-### What the helper gives you
+```bash
+until node agent/cli.mjs status 2>/dev/null; do sleep 0.5; done
+```
 
-`launchApp(label?)` returns:
+From then on every command is a sub-second HTTP call.
 
-| field        | what it is                                                                         |
-| ------------ | ---------------------------------------------------------------------------------- |
-| `app`        | `ElectronApplication` — `app.close()` at the end (always in a `finally`).          |
-| `window`     | Playwright `Page` for the main window — use `getByRole`, `locator`, `evaluate`, … |
-| `screenshot` | `(name) => Promise<string>` — writes `e2e/.artifacts/screenshots/<name>.png`.      |
-| `logPath`    | Absolute path to the captured log file for this session.                           |
+### Commands
 
-The helper automatically streams into `logPath`:
-- `app.process().stdout` / `stderr` prefixed `[main stdout]` / `[main stderr]`
-- `window.on('console')` prefixed `[renderer <type>]`
-- `window.on('pageerror')` prefixed `[renderer error]`
+```
+node agent/cli.mjs <command> [args]
 
-### Quirks (observed, not theoretical)
+status                     running state + artifact paths
+shot [name]                screenshot -> agent/.shots/<name>.png  (Read the PNG)
+html                       full rendered HTML
+text <selector>            innerText of first match
+logs [n]                   last n lines of app.log (default 50)
+click <selector>
+fill <selector> <value...>
+press <key> [selector]
+wait <selector>            wait until visible
+eval <js...>               run in renderer, returns the expression value
+reload
+quit                       shut the server down
+```
 
-- **`window.viewportSize()` returns `null`** for Electron windows. If you need content dimensions, use `await window.evaluate(() => ({ w: innerWidth, h: innerHeight }))`.
-- **Main-process `console.log` shows up in `[main stdout]`** in the log file, not in Playwright's test stdout. Read the log file to see it.
-- **One window per launch.** If your feature opens a second `BrowserWindow`, wait for it with `app.waitForEvent('window')` rather than `firstWindow()`.
-- **Screenshots are DOMContentLoaded-timed.** If you need a post-render capture (async data, fonts), `await expect(...).toBeVisible()` on the new content before calling `screenshot()`.
-- **`app.close()` must be in a `finally`** — a thrown assertion leaves Electron running otherwise, and subsequent runs fail with a port-in-use-style error.
+Selectors are Playwright selectors: CSS, `text=foo`, `button:has-text('Save')`, `role=button[name="Save"]`, etc.
+
+### The loop
+
+1. Edit code.
+2. Rebuild so the agent sees the new code:
+   ```bash
+   npx electron-vite build && node agent/cli.mjs reload
+   ```
+3. Drive it:
+   ```bash
+   node agent/cli.mjs click "button:has-text('Settings')"
+   node agent/cli.mjs fill "input[name=email]" "me@example.com"
+   node agent/cli.mjs shot after-fill
+   ```
+4. Observe via `shot`, `text`, `html`, `eval`, `logs`.
+5. Iterate. `quit` when done.
+
+### Quirks (verified against the live app)
+
+- **DOM mutations persist** across commands until `reload`. Useful for poking, noisy for real testing — `reload` to reset.
+- **Always pass scripts as `return …`-style one-liners** to `eval`; the server wraps them in `async () => { <your script> }`.
+- **`eval` returns `null` when the script returns `undefined`** — the CLI drops it to nothing on stdout.
+- **Screenshots are saved to `agent/.shots/<name>.png`** — the CLI prints the absolute path; `Read` it to see the UI.
+- **Logs are empty until something logs.** The renderer won't log on its own unless the code calls `console.*`.
+- **Second window?** The CLI targets `app.firstWindow()`. If a feature opens a second window, extend the server.
+- **Code changes require `npx electron-vite build` + `reload`.** The server doesn't watch files.
 
 ### When to ask the human for `npm run dev` instead
 
-- The user wants to click around manually.
-- You're iterating on fast-changing CSS/Tailwind where HMR is faster than the ~1s build loop.
-- You explicitly need DevTools open.
+- They want to click around themselves.
+- They want DevTools open.
+- Fast CSS/Tailwind iteration where HMR beats build + reload.
 
-In those cases, ask them to run it; do not start or kill it yourself.
+Never start or kill `npm run dev` yourself.
 
 ## Adding shadcn components
 
