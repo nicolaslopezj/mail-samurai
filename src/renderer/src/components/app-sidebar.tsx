@@ -1,6 +1,7 @@
-import { ArchiveIcon, FileIcon, InboxIcon, SendIcon, SettingsIcon, TrashIcon } from 'lucide-react'
+import { type Account, accountDisplayName } from '@shared/settings'
+import { InboxIcon, MailsIcon, SettingsIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-
 import {
   Sidebar,
   SidebarContent,
@@ -14,33 +15,43 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 
-const mailboxes = [
-  { title: 'Inbox', icon: InboxIcon },
-  { title: 'Sent', icon: SendIcon },
-  { title: 'Drafts', icon: FileIcon },
-  { title: 'Archive', icon: ArchiveIcon },
-  { title: 'Trash', icon: TrashIcon }
-]
-
 export function AppSidebar(): React.JSX.Element {
   const location = useLocation()
+  const [accounts, setAccounts] = useState<Account[]>([])
+
+  useEffect(() => {
+    window.api.accounts.list().then(setAccounts)
+  }, [])
 
   return (
-    <Sidebar>
+    <Sidebar collapsible="none" className="w-full">
       <SidebarHeader className="h-10 p-0" />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Mailboxes</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {mailboxes.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton>
-                    <item.icon />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={location.pathname === '/'}>
+                  <Link to="/">
+                    <MailsIcon />
+                    <span>All Inboxes</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              {accounts.map((account) => {
+                const path = `/inbox/${account.id}`
+                return (
+                  <SidebarMenuItem key={account.id}>
+                    <SidebarMenuButton asChild isActive={location.pathname === path}>
+                      <Link to={path}>
+                        <InboxIcon />
+                        <span>{accountDisplayName(account)}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -48,7 +59,7 @@ export function AppSidebar(): React.JSX.Element {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={location.pathname === '/settings'}>
+            <SidebarMenuButton asChild isActive={location.pathname.startsWith('/settings')}>
               <Link to="/settings">
                 <SettingsIcon />
                 <span>Settings</span>

@@ -1,20 +1,29 @@
 import { Outlet } from 'react-router-dom'
 
 import { AppSidebar } from '@/components/app-sidebar'
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
+import { SidebarProvider } from '@/components/ui/sidebar'
 
 export function MainLayout(): React.JSX.Element {
   return (
-    <SidebarProvider>
-      <AppSidebar />
-      <SidebarInset>
-        <div className="flex h-svh">
-          <aside className="w-96 shrink-0 border-r bg-background" />
-          <main className="flex-1 bg-background">
+    <SidebarProvider className="h-svh overflow-hidden">
+      <ResizablePanelGroup orientation="horizontal" className="h-full">
+        <ResizablePanel
+          id="sidebar"
+          defaultSize="18%"
+          minSize="12%"
+          maxSize="35%"
+          className="bg-sidebar"
+        >
+          <AppSidebar />
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel id="content" defaultSize="82%" minSize="40%">
+          <main className="h-full w-full bg-background">
             <Outlet />
           </main>
-        </div>
-      </SidebarInset>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </SidebarProvider>
   )
 }

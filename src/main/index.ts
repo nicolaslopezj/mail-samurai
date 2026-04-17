@@ -2,7 +2,9 @@ import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
+import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
+import { startScheduler } from './sync-scheduler'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -39,7 +41,9 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  initDb()
   registerIpcHandlers()
+  startScheduler()
   createWindow()
 
   app.on('activate', () => {

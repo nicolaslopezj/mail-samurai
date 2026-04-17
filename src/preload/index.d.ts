@@ -1,11 +1,14 @@
 import type { ElectronAPI } from '@electron-toolkit/preload'
-import type { SettingsApi } from '../shared/settings'
+import type { AccountsApi, MessagesApi, SettingsApi, SyncApi } from '../shared/settings'
 
 declare global {
   interface Window {
     electron: ElectronAPI
     api: {
       settings: SettingsApi
+      accounts: AccountsApi
+      messages: MessagesApi
+      sync: SyncApi
     }
   }
 }

@@ -3,9 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <title>Mail Samurai</title>
+    <!--
+      Renderer CSP. img-src is permissive because email bodies are rendered
+      inside a sandboxed `<iframe srcdoc>` and srcdoc iframes inherit the
+      parent CSP as a CEILING — the iframe can only restrict further, never
+      relax. The iframe's own inner CSP (lib/sanitize-email.ts) is what
+      actually enforces the user's "Load remote images" preference.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:"
     />
   </head>
 
