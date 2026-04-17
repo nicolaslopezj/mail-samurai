@@ -42,6 +42,8 @@ const settings: SettingsApi = {
       categories,
       uncategorizedAction
     ) as Promise<UiSettings>,
+  reorderCategories: (orderedIds: string[]) =>
+    ipcRenderer.invoke('settings:reorderCategories', orderedIds) as Promise<UiSettings>,
   setTheme: (theme: ThemePreference) =>
     ipcRenderer.invoke('settings:setTheme', theme) as Promise<UiSettings>,
   setSummaryLanguage: (language: SummaryLanguage) =>

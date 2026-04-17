@@ -298,9 +298,7 @@ function pickArchiveMailbox(list: MailboxListEntry[]): string | null {
   if (archive) return archive.path
   const all = list.find((m) => hasFlag(m, '\\All'))
   if (all) return all.path
-  const byName = list.find((m) =>
-    ['Archive', 'Archives', '[Gmail]/All Mail'].includes(m.path)
-  )
+  const byName = list.find((m) => ['Archive', 'Archives', '[Gmail]/All Mail'].includes(m.path))
   return byName?.path ?? null
 }
 
@@ -373,35 +371,21 @@ export async function unarchiveMessage(account: Account, messageId: string): Pro
         .filter((m) => !skipFlags.some((f) => hasFlag(m, f)))
         .map((m) => m.path)
     ]
-    console.log(
-      `[unarchive] ${account.email} candidates:`,
-      candidates,
-      'looking for',
-      bareId
-    )
-    // Fetching envelope for a bounded number of recent messages in each
-    // candidate and matching Message-Id ourselves is a more forgiving probe
-    // than IMAP HEADER search — some servers (iCloud in particular) return
-    // empty results from HEADER queries even when the message is present.
+    // For each candidate folder, try an IMAP HEADER search first; if that
+    // returns empty, scan the last ~100 envelopes and match Message-Id
+    // ourselves. iCloud's IMAP often returns no HEADER hits even when the
+    // message is present, so the fallback is load-bearing.
     for (const folder of candidates) {
-      let opened = false
       try {
         await client.mailboxOpen(folder)
-        opened = true
-      } catch (err) {
-        console.log(`[unarchive] cannot open ${folder}:`, err)
+      } catch {
         continue
       }
-      if (!opened) continue
-      const hits = await client.search({ header: { 'message-id': bareId } }, { uid: true })
-      console.log(`[unarchive] ${folder} header-search hits:`, hits)
       let archiveUid: number | null = null
+      const hits = await client.search({ header: { 'message-id': bareId } }, { uid: true })
       if (hits && hits.length > 0) {
         archiveUid = hits[hits.length - 1]
       } else {
-        // Fallback: scan the most recent ~100 envelopes for a Message-Id
-        // match. Some servers (iCloud in particular) return empty HEADER
-        // search results even when the message is present.
         const exists = (client.mailbox && (client.mailbox as { exists?: number }).exists) || 0
         if (exists > 0) {
           const start = Math.max(1, exists - 100)
@@ -417,7 +401,6 @@ export async function unarchiveMessage(account: Account, messageId: string): Pro
             }
           }
         }
-        console.log(`[unarchive] ${folder} envelope-scan archiveUid:`, archiveUid)
       }
       if (archiveUid !== null) {
         await client.messageMove(String(archiveUid), 'INBOX', { uid: true })

@@ -75,19 +75,19 @@ function rowToMessage(row: MessageRow): Message {
 }
 
 /**
- * Counts used by the sidebar badges. "Inbox" counts unread messages the AI
- * hasn't reviewed yet (the Inbox bucket actually shows). "Other" counts unread
- * messages the AI reviewed but didn't match any category. "Todo" is the total
- * number of messages (read or not) whose category has a `todo` action — it's
- * a follow-up list, so read/unread doesn't matter.
+ * Counts used by the sidebar badges. "Inbox" counts unread non-archived
+ * messages (the Inbox bucket — messages stay there until archived, regardless
+ * of AI categorization). "Other" counts unread messages the AI reviewed but
+ * didn't match any category. "Todo" is the total number of messages (read or
+ * not) whose category has a `todo` action — it's a follow-up list, so
+ * read/unread doesn't matter.
  */
 export function getCounts(todoCategoryIds: string[]): MessageCounts {
   const db = getDb()
   const inboxRows = db
     .prepare(
       `SELECT account_id, COUNT(*) AS n FROM messages
-       WHERE seen = 0 AND category_id IS NULL AND categorized_at IS NULL
-         AND archived_at_ms IS NULL
+       WHERE seen = 0 AND archived_at_ms IS NULL
        GROUP BY account_id`
     )
     .all() as { account_id: string; n: number }[]
@@ -162,8 +162,8 @@ export function listMessages(query: MessagesQuery): Message[] {
     where.push('category_id = ?')
     where.push('archived_at_ms IS NULL')
     params.push(query.categoryId)
-  } else if (query.uncategorized) {
-    where.push('category_id IS NULL AND categorized_at IS NULL AND archived_at_ms IS NULL')
+  } else if (query.inbox) {
+    where.push('archived_at_ms IS NULL')
   } else if (query.other) {
     where.push('category_id IS NULL AND categorized_at IS NOT NULL AND archived_at_ms IS NULL')
   } else if (query.archived) {
@@ -233,6 +233,24 @@ export function getMessage(accountId: string, uid: number): MessageWithBody | nu
     bodyHtml: row.body_html,
     inlineAttachments
   }
+}
+
+/**
+ * Refs for messages that haven't been reviewed by the AI yet
+ * (`categorized_at IS NULL`), newest first. Archived messages are included —
+ * we want AI data for them too, and archiving preserves row fields other than
+ * `archived_at_ms`. Capped by `limit` to bound per-pass API usage.
+ */
+export function listUncategorizedRefs(limit: number): { accountId: string; uid: number }[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT account_id, uid FROM messages
+       WHERE categorized_at IS NULL
+       ORDER BY date_ms DESC LIMIT ?`
+    )
+    .all(limit) as { account_id: string; uid: number }[]
+  return rows.map((r) => ({ accountId: r.account_id, uid: r.uid }))
 }
 
 export function listLocalUids(accountId: string, uidValidity: number): number[] {
@@ -409,6 +427,22 @@ export function setArchivedLocal(accountId: string, uid: number, archivedAt: num
        WHERE account_id = ? AND uid = ? AND archived_at_ms IS NULL`
     )
     .run(archivedAt, accountId, uid)
+  return result.changes > 0
+}
+
+/**
+ * Clear `archived_at_ms` locally. Used by the unarchive optimistic path so
+ * the list views move the message back to its inbox bucket before the IMAP
+ * round-trip completes.
+ */
+export function clearArchivedLocal(accountId: string, uid: number): boolean {
+  const db = getDb()
+  const result = db
+    .prepare(
+      `UPDATE messages SET archived_at_ms = NULL
+       WHERE account_id = ? AND uid = ? AND archived_at_ms IS NOT NULL`
+    )
+    .run(accountId, uid)
   return result.changes > 0
 }
 

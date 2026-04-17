@@ -27,6 +27,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from '@/components/ui/sidebar'
+import { cn } from '@/lib/utils'
 
 const EMPTY_COUNTS: MessageCounts = {
   inboxUnread: {},
@@ -48,6 +49,36 @@ export function AppSidebar(): React.JSX.Element {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [counts, setCounts] = useState<MessageCounts>(EMPTY_COUNTS)
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [overPosition, setOverPosition] = useState<'above' | 'below'>('above')
+
+  function clearCategoryDrag(): void {
+    setDragIndex(null)
+    setOverIndex(null)
+  }
+
+  function handleCategoryDrop(targetIndex: number): void {
+    const source = dragIndex
+    clearCategoryDrag()
+    if (source === null) return
+    const insertBase = overPosition === 'above' ? targetIndex : targetIndex + 1
+    // After removing the source, subsequent indices shift left by 1.
+    const insertAt = source < insertBase ? insertBase - 1 : insertBase
+    if (source === insertAt) return
+    const previous = categories
+    const next = previous.slice()
+    const [moved] = next.splice(source, 1)
+    next.splice(insertAt, 0, moved)
+    setCategories(next)
+    window.api.settings
+      .reorderCategories(next.map((c) => c.id))
+      .then((s) => setCategories(s.categories))
+      .catch((err) => {
+        setCategories(previous)
+        console.error('[categories] reorder failed:', err)
+      })
+  }
 
   useEffect(() => {
     window.api.accounts.list().then(setAccounts)
@@ -113,16 +144,51 @@ export function AppSidebar(): React.JSX.Element {
             <SidebarGroupLabel>Categories</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {categories.map((category) => {
+                {categories.map((category, index) => {
                   const path = `/category/${category.id}`
+                  const isDragging = dragIndex === index
+                  const isDropTarget = overIndex === index && dragIndex !== null
                   return (
-                    <SidebarMenuItem key={category.id}>
+                    <SidebarMenuItem
+                      key={category.id}
+                      draggable
+                      onDragStart={(e) => {
+                        setDragIndex(index)
+                        e.dataTransfer.effectAllowed = 'move'
+                        e.dataTransfer.setData('text/plain', category.id)
+                      }}
+                      onDragOver={(e) => {
+                        if (dragIndex === null) return
+                        e.preventDefault()
+                        e.dataTransfer.dropEffect = 'move'
+                        const rect = e.currentTarget.getBoundingClientRect()
+                        const position =
+                          e.clientY - rect.top < rect.height / 2 ? 'above' : 'below'
+                        if (overIndex !== index) setOverIndex(index)
+                        if (overPosition !== position) setOverPosition(position)
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        handleCategoryDrop(index)
+                      }}
+                      onDragEnd={clearCategoryDrag}
+                      className={cn(
+                        'no-drag cursor-grab active:cursor-grabbing',
+                        isDragging && 'opacity-40'
+                      )}
+                    >
+                      {isDropTarget && overPosition === 'above' && (
+                        <div className="pointer-events-none absolute inset-x-1 -top-px z-10 h-0.5 rounded-full bg-primary" />
+                      )}
+                      {isDropTarget && overPosition === 'below' && (
+                        <div className="pointer-events-none absolute inset-x-1 -bottom-px z-10 h-0.5 rounded-full bg-primary" />
+                      )}
                       <SidebarMenuButton
                         asChild
                         className="no-drag"
                         isActive={location.pathname === path}
                       >
-                        <Link to={path}>
+                        <Link to={path} draggable={false}>
                           <TagIcon />
                           <span>{category.name}</span>
                         </Link>

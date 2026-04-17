@@ -6,7 +6,7 @@ import {
   type UiSettings
 } from '@shared/settings'
 import { CheckIcon, Loader2Icon, PlusIcon, Trash2Icon } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,17 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { ipcErrorMessage } from '@/lib/ipc-error'
+
+function AutoTextarea(props: React.ComponentProps<typeof Textarea>): React.JSX.Element {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [props.value])
+  return <Textarea {...props} ref={ref} />
+}
 
 type SaveState = 'idle' | 'loading' | 'error'
 
@@ -231,12 +242,13 @@ export function SettingsCategoriesPage(): React.JSX.Element {
 
             <div className="space-y-2">
               <Label htmlFor={`cat-instr-${category.id}`}>Instructions</Label>
-              <Textarea
+              <AutoTextarea
                 id={`cat-instr-${category.id}`}
                 placeholder="Describe which messages belong in this category. The AI reads this to decide."
                 value={category.instructions}
                 onChange={(e) => updateDraft(category.id, { instructions: e.target.value })}
                 rows={3}
+                className="resize-none overflow-hidden"
               />
             </div>
 

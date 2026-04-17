@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron'
 import { ARCHIVE_RETENTION_MS } from '../shared/settings'
 import * as accounts from './accounts-store'
+import { categorizePendingMessages } from './ai-auto'
 import { syncAccount } from './imap-sync'
 import { prunePermanent } from './messages-store'
 import { getPollIntervalMinutes, getSyncFromMs } from './settings-store'
@@ -31,6 +32,11 @@ async function runOne(accountId: string): Promise<void> {
         `[sync] ${account.email} added=${result.added} updated=${result.updated} archived=${result.archived} deleted=${result.deleted}`
       )
       notifyChanged(accountId)
+      // Fire-and-forget: the categorizer serializes itself internally, so
+      // concurrent sync runs across accounts collapse into a single pass.
+      categorizePendingMessages().catch((err) =>
+        console.error('[ai] auto-categorize pass failed:', err)
+      )
     } catch (err) {
       console.error(`[sync] account=${accountId} failed:`, err)
     } finally {

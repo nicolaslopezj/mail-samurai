@@ -145,6 +145,8 @@ export type SettingsApi = {
     categories: Category[],
     uncategorizedAction: CategoryAction
   ) => Promise<UiSettings>
+  /** Persist a new category order. Ids not present are kept at the end. */
+  reorderCategories: (orderedIds: string[]) => Promise<UiSettings>
   setTheme: (theme: ThemePreference) => Promise<UiSettings>
   setSummaryLanguage: (language: SummaryLanguage) => Promise<UiSettings>
 }
@@ -291,8 +293,11 @@ export type MessagesQuery = {
   /** Omit for the unified inbox across all accounts. */
   accountId?: string
   limit?: number
-  /** Only return messages the AI hasn't categorized yet (the Inbox bucket). */
-  uncategorized?: boolean
+  /**
+   * The Inbox bucket: every non-archived message, regardless of whether the
+   * AI has categorized it. Messages only leave the inbox once archived.
+   */
+  inbox?: boolean
   /** Only return categorized messages that didn't match any user category. */
   other?: boolean
   /** Only return messages assigned to this category id. */
@@ -302,15 +307,16 @@ export type MessagesQuery = {
 }
 
 /**
- * Sidebar-badge counts. Inbox counts are unread + uncategorized (matching what
- * the inbox views actually show). `todoTotal` intentionally ignores read/unread
- * — the To-Do list is a follow-up bucket, so messages stay until explicitly
- * recategorized.
+ * Sidebar-badge counts. Inbox counts are unread non-archived messages
+ * (matching what the inbox views actually show — messages stay in the inbox
+ * until archived, regardless of AI categorization). `todoTotal` intentionally
+ * ignores read/unread — the To-Do list is a follow-up bucket, so messages
+ * stay until explicitly recategorized.
  */
 export type MessageCounts = {
-  /** unread & not-yet-categorized, keyed by account id. */
+  /** unread non-archived, keyed by account id. */
   inboxUnread: Record<string, number>
-  /** unread & not-yet-categorized across all accounts. */
+  /** unread non-archived across all accounts. */
   inboxUnreadTotal: number
   /** unread messages per category id. */
   categoryUnread: Record<string, number>

@@ -32,8 +32,6 @@ export function startAutoUpdater(): void {
   autoUpdater.checkForUpdatesAndNotify().catch((err) => log.error('[auto-updater] check', err))
 
   setInterval(() => {
-    autoUpdater
-      .checkForUpdatesAndNotify()
-      .catch((err) => log.error('[auto-updater] poll', err))
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => log.error('[auto-updater] poll', err))
   }, CHECK_INTERVAL_MS)
 }

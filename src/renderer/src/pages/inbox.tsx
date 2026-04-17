@@ -62,8 +62,9 @@ type Props = {
   accountScoped?: boolean
   /**
    * When set, the page reads `:id` from the URL, filters by that category id,
-   * and shows the category name as the header. Without it, only uncategorized
-   * messages are listed (the default Inbox behavior).
+   * and shows the category name as the header. Without it, every non-archived
+   * message is listed (the default Inbox behavior — messages stay in the inbox
+   * until archived, regardless of AI categorization).
    */
   categoryScoped?: boolean
   /**
@@ -119,7 +120,7 @@ export function InboxPage({
   }, [])
 
   const loadMessages = useCallback(async () => {
-    const query: MessagesQuery = { accountId, limit: 200 }
+    const query: MessagesQuery = { accountId, limit: 1000 }
     if (categoryId) {
       query.categoryId = categoryId
     } else if (otherScoped) {
@@ -127,7 +128,7 @@ export function InboxPage({
     } else if (archiveScoped) {
       query.archived = true
     } else {
-      query.uncategorized = true
+      query.inbox = true
     }
     const list = await window.api.messages.list(query)
     if (!isMountedRef.current) return
@@ -307,7 +308,7 @@ export function InboxPage({
                       ? 'No other messages.'
                       : archiveScoped
                         ? 'No archived messages yet.'
-                        : 'No uncategorized messages. Nice.'}
+                        : 'Inbox zero. Nice.'}
               </div>
             ) : (
               <ul className="divide-y">
@@ -369,7 +370,12 @@ export function InboxPage({
                           {m.subject || '(no subject)'}
                         </div>
                         {(m.aiSummary || m.snippet) && (
-                          <div className="line-clamp-2 w-full whitespace-pre-line text-xs text-muted-foreground">
+                          <div
+                            className={cn(
+                              'w-full whitespace-pre-line text-xs text-muted-foreground',
+                              !m.aiSummary && 'line-clamp-2'
+                            )}
+                          >
                             {m.aiSummary || m.snippet}
                           </div>
                         )}

@@ -59,6 +59,10 @@ export function registerIpcHandlers(): void {
       store.setCategories(categories, uncategorizedAction)
   )
 
+  ipcMain.handle('settings:reorderCategories', (_event, orderedIds: string[]) =>
+    store.reorderCategories(orderedIds)
+  )
+
   ipcMain.handle('settings:setTheme', (_event, theme: ThemePreference) => store.setTheme(theme))
 
   ipcMain.handle('settings:setSummaryLanguage', (_event, language: SummaryLanguage) =>
@@ -145,15 +149,32 @@ export function registerIpcHandlers(): void {
     const list = await accounts.list()
     const account = list.find((a) => a.id === accountId)
     if (!account) throw new Error('Account not found.')
-    // IMAP first — a failure here leaves the local cache untouched. Only
-    // after the server-side move succeeds do we drop the stale row and
-    // trigger a sync so the message is refetched under its new INBOX UID.
-    await unarchiveMessage(account, messageId)
-    messages.deleteMessage(accountId, uid)
+
+    // Optimistic: clear archived_at_ms locally and notify *before* the IMAP
+    // round-trip. The list views flip the message back to its inbox bucket
+    // immediately; the server-side move and UID refresh happen in the
+    // background. Mirrors the archive handler's shape.
+    messages.clearArchivedLocal(accountId, uid)
     notifyChanged(accountId)
-    triggerSync(accountId).catch((err) =>
-      console.error('[sync] post-unarchive sync failed:', err)
-    )
+
+    try {
+      await unarchiveMessage(account, messageId)
+    } catch (err) {
+      // Revert the optimistic change so the UI matches reality.
+      messages.setArchivedLocal(accountId, uid, Date.now())
+      notifyChanged(accountId)
+      console.error(`[imap] unarchive uid=${uid} failed:`, err)
+      throw err
+    }
+
+    // The local row still holds the pre-move INBOX UID, which reconcile
+    // would otherwise re-archive on the next sync. Drop it, then trigger a
+    // sync so the message reappears under its fresh INBOX UID. No explicit
+    // notify here — the sync's own `notifyChanged` fires once the upsert
+    // lands, avoiding a transient "message missing" flash between the
+    // delete and the refetch.
+    messages.deleteMessage(accountId, uid)
+    triggerSync(accountId).catch((err) => console.error('[sync] post-unarchive sync failed:', err))
   })
 
   // Sync

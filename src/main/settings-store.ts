@@ -272,6 +272,26 @@ export async function setCategories(
   return toUi(next)
 }
 
+export async function reorderCategories(orderedIds: string[]): Promise<UiSettings> {
+  const current = await read()
+  const byId = new Map(current.categories.map((c) => [c.id, c]))
+  const seen = new Set<string>()
+  const reordered: Category[] = []
+  for (const id of orderedIds) {
+    const category = byId.get(id)
+    if (!category || seen.has(id)) continue
+    seen.add(id)
+    reordered.push(category)
+  }
+  // Keep any ids the renderer didn't include at their original relative position.
+  for (const category of current.categories) {
+    if (!seen.has(category.id)) reordered.push(category)
+  }
+  const next: PersistedSettings = { ...current, categories: reordered }
+  await write(next)
+  return toUi(next)
+}
+
 export async function setTheme(theme: ThemePreference): Promise<UiSettings> {
   const current = await read()
   const next: PersistedSettings = { ...current, theme: sanitizeTheme(theme) }
