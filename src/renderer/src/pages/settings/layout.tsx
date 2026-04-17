@@ -1,10 +1,12 @@
 import {
   ArrowLeftIcon,
+  CloudIcon,
   MailIcon,
   PaletteIcon,
   RefreshCwIcon,
   SparklesIcon,
-  TagsIcon
+  TagsIcon,
+  UsersIcon
 } from 'lucide-react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 
@@ -20,8 +22,10 @@ type NavItem = {
 const NAV: NavItem[] = [
   { to: '/settings/ai', label: 'AI provider', icon: SparklesIcon },
   { to: '/settings/accounts', label: 'Accounts', icon: MailIcon },
+  { to: '/settings/contacts', label: 'Contacts', icon: UsersIcon },
   { to: '/settings/categories', label: 'Categories', icon: TagsIcon },
   { to: '/settings/sync', label: 'Sync', icon: RefreshCwIcon },
+  { to: '/settings/cloud', label: 'Cloud sync', icon: CloudIcon },
   { to: '/settings/appearance', label: 'Appearance', icon: PaletteIcon }
 ]
 

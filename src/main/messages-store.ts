@@ -78,11 +78,9 @@ function rowToMessage(row: MessageRow): Message {
  * Counts used by the sidebar badges. "Inbox" counts unread non-archived
  * messages (the Inbox bucket — messages stay there until archived, regardless
  * of AI categorization). "Other" counts unread messages the AI reviewed but
- * didn't match any category. "Todo" is the total number of messages (read or
- * not) whose category has a `todo` action — it's a follow-up list, so
- * read/unread doesn't matter.
+ * didn't match any category.
  */
-export function getCounts(todoCategoryIds: string[]): MessageCounts {
+export function getCounts(): MessageCounts {
   const db = getDb()
   const inboxRows = db
     .prepare(
@@ -106,6 +104,15 @@ export function getCounts(todoCategoryIds: string[]): MessageCounts {
     .all() as { category_id: string; n: number }[]
   const categoryUnread: Record<string, number> = {}
   for (const r of categoryRows) categoryUnread[r.category_id] = r.n
+  const categoryTotalRows = db
+    .prepare(
+      `SELECT category_id, COUNT(*) AS n FROM messages
+       WHERE category_id IS NOT NULL AND archived_at_ms IS NULL
+       GROUP BY category_id`
+    )
+    .all() as { category_id: string; n: number }[]
+  const categoryTotal: Record<string, number> = {}
+  for (const r of categoryTotalRows) categoryTotal[r.category_id] = r.n
   const otherRow = db
     .prepare(
       `SELECT COUNT(*) AS n FROM messages
@@ -114,17 +121,6 @@ export function getCounts(todoCategoryIds: string[]): MessageCounts {
     )
     .get() as { n: number }
   const otherUnread = otherRow.n
-  let todoTotal = 0
-  if (todoCategoryIds.length > 0) {
-    const placeholders = todoCategoryIds.map(() => '?').join(',')
-    const row = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM messages
-         WHERE category_id IN (${placeholders}) AND archived_at_ms IS NULL`
-      )
-      .get(...todoCategoryIds) as { n: number }
-    todoTotal = row.n
-  }
   const archiveUnread: Record<string, number> = {}
   let archiveUnreadTotal = 0
   const archiveRows = db
@@ -142,8 +138,8 @@ export function getCounts(todoCategoryIds: string[]): MessageCounts {
     inboxUnread,
     inboxUnreadTotal,
     categoryUnread,
+    categoryTotal,
     otherUnread,
-    todoTotal,
     archiveUnread,
     archiveUnreadTotal
   }
@@ -355,6 +351,11 @@ export function upsertMessages(messages: UpsertMessage[]): void {
     }
   })
   tx(messages)
+
+  // Apply any cloud overlays that were waiting for messages we just fetched.
+  // Skipped inside the transaction on purpose — the drain runs its own
+  // short transaction and the work here is idempotent either way.
+  drainCloudOverlayBuffer()
 }
 
 export function updateFlags(
@@ -446,6 +447,56 @@ export function clearArchivedLocal(accountId: string, uid: number): boolean {
   return result.changes > 0
 }
 
+/**
+ * Resolve every local copy of a message identified by its RFC 5322
+ * Message-Id. One Message-Id can appear in multiple accounts (e.g. a
+ * broadcast CC'd to two of the user's inboxes), so we return a list rather
+ * than a single row — overlay sync applies the same category/summary to all.
+ */
+export function listRefsByMessageId(
+  messageId: string
+): { accountId: string; uid: number; categoryId: string | null; aiSummary: string | null }[] {
+  const db = getDb()
+  const rows = db
+    .prepare(`SELECT account_id, uid, category_id, ai_summary FROM messages WHERE message_id = ?`)
+    .all(messageId) as {
+    account_id: string
+    uid: number
+    category_id: string | null
+    ai_summary: string | null
+  }[]
+  return rows.map((r) => ({
+    accountId: r.account_id,
+    uid: r.uid,
+    categoryId: r.category_id,
+    aiSummary: r.ai_summary
+  }))
+}
+
+/**
+ * Apply a full overlay (category + summary + categorized_at) to every local
+ * row with this Message-Id. Used when pulling from the cloud — we don't want
+ * to clobber a local value that's newer than the cloud's, so the caller is
+ * expected to have already won the LWW comparison before reaching here.
+ */
+export function applyOverlayByMessageId(
+  messageId: string,
+  overlay: {
+    categoryId: string | null
+    aiSummary: string | null
+    categorizedAt: number
+  }
+): number {
+  const db = getDb()
+  const result = db
+    .prepare(
+      `UPDATE messages SET category_id = ?, ai_summary = ?, categorized_at = ?
+       WHERE message_id = ?`
+    )
+    .run(overlay.categoryId, overlay.aiSummary, overlay.categorizedAt, messageId)
+  return result.changes
+}
+
 /** Return the RFC 5322 Message-Id of a cached message, if we have it. */
 export function getMessageId(accountId: string, uid: number): string | null {
   const db = getDb()
@@ -456,6 +507,100 @@ export function getMessageId(accountId: string, uid: number): string | null {
     )
     .get(accountId, uid) as { message_id: string | null } | undefined
   return row?.message_id ?? null
+}
+
+/**
+ * Snapshot of every locally categorized message — used by the cloud connect
+ * flow to backfill the event log. Includes `ai_summary` and `categorized_at`
+ * so the uploaded event preserves the original timestamp (so other devices
+ * sort history correctly even though the event itself was inserted today).
+ */
+export function listCategorizedForBackfill(): {
+  messageId: string
+  categoryId: string | null
+  aiSummary: string | null
+  categorizedAt: number
+}[] {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT message_id, category_id, ai_summary, categorized_at FROM messages
+       WHERE categorized_at IS NOT NULL AND message_id IS NOT NULL`
+    )
+    .all() as {
+    message_id: string
+    category_id: string | null
+    ai_summary: string | null
+    categorized_at: number
+  }[]
+  return rows.map((r) => ({
+    messageId: r.message_id,
+    categoryId: r.category_id,
+    aiSummary: r.ai_summary,
+    categorizedAt: r.categorized_at
+  }))
+}
+
+/**
+ * Park a cloud event whose target message we don't have locally yet. The next
+ * IMAP sync that brings the message in will look up the buffer by
+ * `message_id` and apply it. Newer events (higher `event_id`) overwrite
+ * older ones so the buffer is always "the latest pending overlay" per msg.
+ */
+export function bufferCloudOverlay(event: {
+  messageId: string
+  categoryId: string | null
+  aiSummary: string | null
+  categorizedAt: number
+  eventId: number
+}): void {
+  const db = getDb()
+  db.prepare(
+    `INSERT INTO cloud_event_buffer (message_id, category_id, ai_summary, categorized_at, event_id)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(message_id) DO UPDATE SET
+       category_id = excluded.category_id,
+       ai_summary = excluded.ai_summary,
+       categorized_at = excluded.categorized_at,
+       event_id = excluded.event_id
+     WHERE excluded.event_id > cloud_event_buffer.event_id`
+  ).run(event.messageId, event.categoryId, event.aiSummary, event.categorizedAt, event.eventId)
+}
+
+/**
+ * Apply (and drop) any buffered overlays whose `message_id` now has at least
+ * one locally-cached row. Returns the number of buffer rows consumed — used
+ * by the IMAP sync to log "N overlays drained after fetch".
+ */
+export function drainCloudOverlayBuffer(): number {
+  const db = getDb()
+  type BufferRow = {
+    message_id: string
+    category_id: string | null
+    ai_summary: string | null
+    categorized_at: number
+  }
+  // Only consider buffered events whose target message now exists locally.
+  const applicable = db
+    .prepare(
+      `SELECT b.message_id, b.category_id, b.ai_summary, b.categorized_at
+       FROM cloud_event_buffer b
+       WHERE EXISTS (SELECT 1 FROM messages m WHERE m.message_id = b.message_id)`
+    )
+    .all() as BufferRow[]
+  if (applicable.length === 0) return 0
+  const updateStmt = db.prepare(
+    `UPDATE messages SET category_id = ?, ai_summary = ?, categorized_at = ?
+     WHERE message_id = ?`
+  )
+  const dropStmt = db.prepare(`DELETE FROM cloud_event_buffer WHERE message_id = ?`)
+  db.transaction(() => {
+    for (const row of applicable) {
+      updateStmt.run(row.category_id, row.ai_summary, row.categorized_at, row.message_id)
+      dropStmt.run(row.message_id)
+    }
+  })()
+  return applicable.length
 }
 
 /**

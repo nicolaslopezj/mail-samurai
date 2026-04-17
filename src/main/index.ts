@@ -2,7 +2,9 @@ import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
+import { list as listAccounts } from './accounts-store'
 import { startAutoUpdater } from './auto-updater'
+import { backfillFromMessages, isEmpty as contactsEmpty } from './contacts-store'
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { initSettings } from './settings-store'
@@ -45,6 +47,21 @@ app.whenReady().then(async () => {
 
   initDb()
   await initSettings()
+  // One-shot: populate the derived contacts address book from existing
+  // cached messages. Only runs on the first launch after shipping contacts
+  // (or after a user wiped the DB). Subsequent writes come from imap-sync
+  // and smtp-send hooks.
+  if (contactsEmpty()) {
+    try {
+      const accounts = await listAccounts()
+      const byEmail = new Map<string, { id: string; email: string }>()
+      for (const a of accounts) byEmail.set(a.email.toLowerCase(), { id: a.id, email: a.email })
+      const n = backfillFromMessages(byEmail)
+      if (n > 0) console.log(`[contacts] backfilled ${n} sightings from cached messages`)
+    } catch (err) {
+      console.error('[contacts] backfill failed:', err)
+    }
+  }
   registerIpcHandlers()
   startScheduler()
   startAutoUpdater()

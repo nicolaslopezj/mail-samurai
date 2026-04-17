@@ -2,15 +2,26 @@ import { BrowserWindow } from 'electron'
 import { ARCHIVE_RETENTION_MS } from '../shared/settings'
 import * as accounts from './accounts-store'
 import { categorizePendingMessages } from './ai-auto'
+import { syncCloudNow } from './cloud-sync'
 import { syncAccount } from './imap-sync'
 import { prunePermanent } from './messages-store'
-import { getPollIntervalMinutes, getSyncFromMs } from './settings-store'
+import { getPollIntervalMinutes, getSyncFromMs, getUiSettings } from './settings-store'
 
 const STARTUP_DELAY_MS = 2_000
+/**
+ * How often we pull the cloud event log. Independent of the IMAP interval
+ * because the cost profile is different: an IMAP sync is a full mailbox
+ * round-trip (heavy), whereas a cloud pull is a single HTTP call returning
+ * only events newer than the local cursor. 30s gives listen-only devices an
+ * almost-real-time feel without hammering anything.
+ */
+const CLOUD_POLL_MS = 30_000
 
 const inFlight = new Map<string, Promise<void>>()
 let timer: NodeJS.Timeout | null = null
 let currentIntervalMs: number | null = null
+let cloudTimer: NodeJS.Timeout | null = null
+let cloudInFlight = false
 
 export function notifyChanged(accountId?: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -76,12 +87,39 @@ async function applyInterval(): Promise<void> {
   console.log(`[sync] interval set to ${minutes} min`)
 }
 
+/**
+ * Tick the cloud sync. No-op while disconnected (checked inside `syncCloudNow`)
+ * and while a previous pull is still in flight, so overlapping ticks collapse.
+ */
+async function pollCloud(): Promise<void> {
+  if (cloudInFlight) return
+  const settings = await getUiSettings()
+  if (!settings.cloud.enabled) return
+  cloudInFlight = true
+  try {
+    await syncCloudNow()
+    notifyChanged()
+  } catch (err) {
+    console.error('[cloud] poll failed:', err)
+  } finally {
+    cloudInFlight = false
+  }
+}
+
 export function startScheduler(): void {
   if (timer) return
   setTimeout(() => {
     syncAll().catch((err) => console.error('[sync] startup sync failed:', err))
   }, STARTUP_DELAY_MS)
   applyInterval().catch((err) => console.error('[sync] failed to apply interval:', err))
+
+  // Cloud pull runs on its own short timer so listen-only devices (and the
+  // primary's own UI) pick up changes from other devices within 30s.
+  if (!cloudTimer) {
+    cloudTimer = setInterval(() => {
+      pollCloud().catch((err) => console.error('[cloud] interval poll failed:', err))
+    }, CLOUD_POLL_MS)
+  }
 }
 
 /** Re-read the configured interval and reschedule if it changed. */
@@ -94,5 +132,9 @@ export function stopScheduler(): void {
     clearInterval(timer)
     timer = null
     currentIntervalMs = null
+  }
+  if (cloudTimer) {
+    clearInterval(cloudTimer)
+    cloudTimer = null
   }
 }

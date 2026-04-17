@@ -7,11 +7,14 @@ import {
 import {
   ArchiveIcon,
   InboxIcon,
-  ListTodoIcon,
   MailsIcon,
+  PenSquareIcon,
   SettingsIcon,
   TagIcon
 } from 'lucide-react'
+import { ComposeDialog } from '@/components/compose-dialog'
+import { Button } from '@/components/ui/button'
+import { categoryIconComponent } from '@/lib/category-icon'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
@@ -33,8 +36,8 @@ const EMPTY_COUNTS: MessageCounts = {
   inboxUnread: {},
   inboxUnreadTotal: 0,
   categoryUnread: {},
+  categoryTotal: {},
   otherUnread: 0,
-  todoTotal: 0,
   archiveUnread: {},
   archiveUnreadTotal: 0
 }
@@ -52,6 +55,7 @@ export function AppSidebar(): React.JSX.Element {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const [overPosition, setOverPosition] = useState<'above' | 'below'>('above')
+  const [composeOpen, setComposeOpen] = useState(false)
 
   function clearCategoryDrag(): void {
     setDragIndex(null)
@@ -119,23 +123,18 @@ export function AppSidebar(): React.JSX.Element {
     <Sidebar collapsible="none" className="drag w-full">
       <SidebarHeader className="h-10 p-0" />
       <SidebarContent>
-        <SidebarGroup>
+        <SidebarGroup className="pb-0">
           <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  asChild
-                  className="no-drag"
-                  isActive={location.pathname === '/todo'}
-                >
-                  <Link to="/todo">
-                    <ListTodoIcon />
-                    <span>To Do</span>
-                  </Link>
-                </SidebarMenuButton>
-                <CountBadge count={counts.todoTotal} />
-              </SidebarMenuItem>
-            </SidebarMenu>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setComposeOpen(true)}
+              className="no-drag w-full justify-start gap-2"
+            >
+              <PenSquareIcon />
+              <span>New Message</span>
+            </Button>
           </SidebarGroupContent>
         </SidebarGroup>
 
@@ -189,11 +188,20 @@ export function AppSidebar(): React.JSX.Element {
                         isActive={location.pathname === path}
                       >
                         <Link to={path} draggable={false}>
-                          <TagIcon />
+                          {(() => {
+                            const Icon = categoryIconComponent(category.icon)
+                            return <Icon />
+                          })()}
                           <span>{category.name}</span>
                         </Link>
                       </SidebarMenuButton>
-                      <CountBadge count={counts.categoryUnread[category.id] ?? 0} />
+                      <CountBadge
+                        count={
+                          (category.countMode === 'total'
+                            ? counts.categoryTotal[category.id]
+                            : counts.categoryUnread[category.id]) ?? 0
+                        }
+                      />
                     </SidebarMenuItem>
                   )
                 })}
@@ -305,6 +313,13 @@ export function AppSidebar(): React.JSX.Element {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      <ComposeDialog
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        mode="new"
+        accounts={accounts}
+        defaultAccountId={accounts[0]?.id}
+      />
     </Sidebar>
   )
 }

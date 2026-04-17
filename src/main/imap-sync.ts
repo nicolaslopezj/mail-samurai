@@ -2,6 +2,7 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { type Account, ARCHIVE_RETENTION_MS, type EmailAddress } from '../shared/settings'
 import { getPassword } from './accounts-store'
+import { recordMessageAddresses } from './contacts-store'
 import {
   deleteAllForAccount,
   getSyncState,
@@ -202,6 +203,22 @@ export async function syncAccount(account: Account, syncFromMs: number): Promise
       }
       upsertMessages(batch)
       added = batch.length
+      // Fold the new messages into the contacts address book. INBOX fetches
+      // always represent received mail from the account owner's perspective
+      // — sent messages go to a separate folder we don't sync. If the user
+      // happens to be the From (BCC-to-self), `recordMessageAddresses`
+      // filters their own address back out.
+      for (const m of batch) {
+        recordMessageAddresses({
+          accountId: account.id,
+          ownEmail: account.email,
+          from: m.from,
+          to: m.to,
+          cc: m.cc,
+          dateMs: m.dateMs,
+          fromOwner: m.from?.address.toLowerCase() === account.email.toLowerCase()
+        })
+      }
     }
 
     // --- Refresh flags for messages we already have ------------------------
@@ -321,6 +338,88 @@ export async function archiveMessage(account: Account, uid: number): Promise<voi
     }
     await client.mailboxOpen('INBOX')
     await client.messageMove(String(uid), destination, { uid: true })
+  } finally {
+    try {
+      await client.logout()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Pick the trash destination for an IMAP account. Prefer `\Trash` (RFC 6154),
+ * then fall back to common folder names. Returns null if nothing plausible is
+ * available — caller should surface an error rather than silently swallowing.
+ */
+function pickTrashMailbox(list: MailboxListEntry[]): string | null {
+  const hasFlag = (m: MailboxListEntry, flag: string): boolean => {
+    if (m.specialUse === flag) return true
+    if (!m.flags) return false
+    if (Array.isArray(m.flags)) return m.flags.includes(flag)
+    return m.flags.has(flag)
+  }
+  const trash = list.find((m) => hasFlag(m, '\\Trash'))
+  if (trash) return trash.path
+  const byName = list.find((m) =>
+    ['Trash', 'Deleted Messages', 'Deleted Items', '[Gmail]/Trash'].includes(m.path)
+  )
+  return byName?.path ?? null
+}
+
+/**
+ * Move a message from INBOX into the account's Trash folder. Mirrors
+ * `archiveMessage` but targets `\Trash`. The next sync stamps
+ * `archived_at_ms` locally as usual; callers may also drop the local row.
+ */
+export async function deleteMessageImap(account: Account, uid: number): Promise<void> {
+  const password = await getPassword(account.id)
+  if (!password) throw new Error(`No stored password for account ${account.email}`)
+
+  const client = makeClient(account, password)
+  await client.connect()
+  try {
+    const mailboxes = (await client.list()) as MailboxListEntry[]
+    const destination = pickTrashMailbox(mailboxes)
+    if (!destination) {
+      throw new Error(`No Trash folder found for ${account.email}`)
+    }
+    await client.mailboxOpen('INBOX')
+    await client.messageMove(String(uid), destination, { uid: true })
+  } finally {
+    try {
+      await client.logout()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Move a message from INBOX into a user-specified folder. Creates the folder
+ * on the fly if it doesn't exist — users type names freehand in Settings and
+ * expect the action to "just work" without pre-creating the mailbox.
+ */
+export async function moveMessageToFolder(
+  account: Account,
+  uid: number,
+  folder: string
+): Promise<void> {
+  const password = await getPassword(account.id)
+  if (!password) throw new Error(`No stored password for account ${account.email}`)
+
+  const client = makeClient(account, password)
+  await client.connect()
+  try {
+    // mailboxCreate throws if the folder already exists; that's fine — we
+    // only care that the destination is there before the move.
+    try {
+      await client.mailboxCreate(folder)
+    } catch {
+      // assume it already exists
+    }
+    await client.mailboxOpen('INBOX')
+    await client.messageMove(String(uid), folder, { uid: true })
   } finally {
     try {
       await client.logout()

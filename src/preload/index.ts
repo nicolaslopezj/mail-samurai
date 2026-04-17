@@ -5,11 +5,23 @@ import type {
   AccountDraft,
   AccountsApi,
   AiApi,
+  AiDraftReplyRequest,
   AiModel,
   AiProvider,
+  AiReplyPreferences,
   CategorizationResult,
   Category,
   CategoryAction,
+  CloudApi,
+  CloudConfig,
+  CloudCredentials,
+  Contact,
+  ContactsApi,
+  ContactsQuery,
+  EmailDraft,
+  MacContactsImportResult,
+  MacContactsState,
+  MacContactsStatus,
   Message,
   MessageCounts,
   MessagesApi,
@@ -47,7 +59,12 @@ const settings: SettingsApi = {
   setTheme: (theme: ThemePreference) =>
     ipcRenderer.invoke('settings:setTheme', theme) as Promise<UiSettings>,
   setSummaryLanguage: (language: SummaryLanguage) =>
-    ipcRenderer.invoke('settings:setSummaryLanguage', language) as Promise<UiSettings>
+    ipcRenderer.invoke('settings:setSummaryLanguage', language) as Promise<UiSettings>,
+  setAiReplyPreferences: (preferences: AiReplyPreferences) =>
+    ipcRenderer.invoke(
+      'settings:setAiReplyPreferences',
+      preferences
+    ) as Promise<UiSettings>
 }
 
 const accounts: AccountsApi = {
@@ -73,6 +90,7 @@ const messages: MessagesApi = {
     ipcRenderer.invoke('messages:archive', accountId, uid) as Promise<void>,
   unarchive: (accountId: string, uid: number) =>
     ipcRenderer.invoke('messages:unarchive', accountId, uid) as Promise<void>,
+  send: (draft: EmailDraft) => ipcRenderer.invoke('messages:send', draft) as Promise<void>,
   counts: () => ipcRenderer.invoke('messages:counts') as Promise<MessageCounts>,
   onChanged: (handler: () => void) => {
     const listener = (): void => handler()
@@ -89,10 +107,34 @@ const sync: SyncApi = {
 
 const ai: AiApi = {
   categorize: (accountId: string, uid: number) =>
-    ipcRenderer.invoke('ai:categorize', accountId, uid) as Promise<CategorizationResult>
+    ipcRenderer.invoke('ai:categorize', accountId, uid) as Promise<CategorizationResult>,
+  draftReply: (request: AiDraftReplyRequest) =>
+    ipcRenderer.invoke('ai:draftReply', request) as Promise<string>
 }
 
-const api = { settings, accounts, messages, sync, ai }
+const contacts: ContactsApi = {
+  search: (query: ContactsQuery) =>
+    ipcRenderer.invoke('contacts:search', query) as Promise<Contact[]>,
+  macState: () => ipcRenderer.invoke('contacts:macState') as Promise<MacContactsState>,
+  macRequestAccess: () =>
+    ipcRenderer.invoke('contacts:macRequestAccess') as Promise<MacContactsStatus>,
+  macImport: () => ipcRenderer.invoke('contacts:macImport') as Promise<MacContactsImportResult>,
+  macDisconnect: () => ipcRenderer.invoke('contacts:macDisconnect') as Promise<MacContactsState>
+}
+
+const cloud: CloudApi = {
+  get: () => ipcRenderer.invoke('cloud:get') as Promise<CloudConfig>,
+  test: (creds: CloudCredentials) => ipcRenderer.invoke('cloud:test', creds) as Promise<void>,
+  configure: (creds: CloudCredentials) =>
+    ipcRenderer.invoke('cloud:configure', creds) as Promise<CloudConfig>,
+  disconnect: () => ipcRenderer.invoke('cloud:disconnect') as Promise<CloudConfig>,
+  pushHistory: () => ipcRenderer.invoke('cloud:pushHistory') as Promise<number>,
+  syncNow: () => ipcRenderer.invoke('cloud:syncNow') as Promise<CloudConfig>,
+  setListenOnly: (enabled: boolean) =>
+    ipcRenderer.invoke('cloud:setListenOnly', enabled) as Promise<CloudConfig>
+}
+
+const api = { settings, accounts, messages, sync, ai, contacts, cloud }
 
 try {
   contextBridge.exposeInMainWorld('electron', electronAPI)

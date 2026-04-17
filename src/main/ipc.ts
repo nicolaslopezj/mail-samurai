@@ -1,20 +1,40 @@
 import { ipcMain } from 'electron'
 import type {
   AccountDraft,
+  AiDraftReplyRequest,
   AiProvider,
+  AiReplyPreferences,
   Category,
   CategoryAction,
+  CloudCredentials,
+  ContactsQuery,
+  EmailDraft,
   MessagesQuery,
   SummaryLanguage,
   ThemePreference
 } from '../shared/settings'
 import * as accounts from './accounts-store'
 import { categorizeMessage } from './ai-categorize'
+import { draftReply } from './ai-draft-reply'
 import { listModels } from './ai-models'
+import {
+  connectCloud,
+  disconnectCloud,
+  pushCategoriesIfConnected,
+  pushKvIfConnected,
+  pushLocalHistory,
+  pushMessageOverlay,
+  syncCloudNow,
+  testCloudConnection
+} from './cloud-sync'
+import * as contacts from './contacts-store'
 import { archiveMessage, setMessageSeen, unarchiveMessage } from './imap-sync'
 import { testImapAuth } from './imap-test'
+import * as macContacts from './mac-contacts'
 import * as messages from './messages-store'
+import { KV_KEYS } from './overlay-store'
 import * as store from './settings-store'
+import { sendDraft } from './smtp-send'
 import { notifyChanged, reloadInterval, triggerSync } from './sync-scheduler'
 
 export function registerIpcHandlers(): void {
@@ -55,19 +75,67 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'settings:setCategories',
-    (_event, categories: Category[], uncategorizedAction: CategoryAction) =>
-      store.setCategories(categories, uncategorizedAction)
+    async (_event, categories: Category[], uncategorizedAction: CategoryAction) => {
+      const next = await store.setCategories(categories, uncategorizedAction)
+      // Fire-and-forget upload so other devices pick up the change on their
+      // next pull. The helper is a no-op when the user isn't connected.
+      pushCategoriesIfConnected(next.categories).catch(() => {})
+      pushKvIfConnected(KV_KEYS.uncategorizedAction, next.uncategorizedAction).catch(() => {})
+      return next
+    }
   )
 
-  ipcMain.handle('settings:reorderCategories', (_event, orderedIds: string[]) =>
-    store.reorderCategories(orderedIds)
-  )
+  ipcMain.handle('settings:reorderCategories', async (_event, orderedIds: string[]) => {
+    const next = await store.reorderCategories(orderedIds)
+    pushCategoriesIfConnected(next.categories).catch(() => {})
+    return next
+  })
 
   ipcMain.handle('settings:setTheme', (_event, theme: ThemePreference) => store.setTheme(theme))
 
-  ipcMain.handle('settings:setSummaryLanguage', (_event, language: SummaryLanguage) =>
-    store.setSummaryLanguage(language)
+  ipcMain.handle('settings:setSummaryLanguage', async (_event, language: SummaryLanguage) => {
+    const next = await store.setSummaryLanguage(language)
+    pushKvIfConnected(KV_KEYS.summaryLanguage, next.summaryLanguage).catch(() => {})
+    return next
+  })
+
+  ipcMain.handle(
+    'settings:setAiReplyPreferences',
+    (_event, preferences: AiReplyPreferences) => store.setAiReplyPreferences(preferences)
   )
+
+  // Cloud sync (Turso / libSQL)
+  ipcMain.handle('cloud:get', async () => (await store.getUiSettings()).cloud)
+
+  ipcMain.handle('cloud:test', async (_event, creds: CloudCredentials) => {
+    await testCloudConnection(creds)
+  })
+
+  ipcMain.handle('cloud:configure', async (_event, creds: CloudCredentials) => {
+    const result = await connectCloud(creds)
+    notifyChanged()
+    return result
+  })
+
+  ipcMain.handle('cloud:disconnect', async () => {
+    const result = await disconnectCloud()
+    return result
+  })
+
+  ipcMain.handle('cloud:syncNow', async () => {
+    const result = await syncCloudNow()
+    notifyChanged()
+    return result
+  })
+
+  ipcMain.handle('cloud:pushHistory', async () => {
+    return pushLocalHistory()
+  })
+
+  ipcMain.handle('cloud:setListenOnly', async (_event, enabled: boolean) => {
+    const next = await store.setCloudListenOnly(enabled)
+    return next.cloud
+  })
 
   // Email accounts
   ipcMain.handle('accounts:list', () => accounts.list())
@@ -97,11 +165,7 @@ export function registerIpcHandlers(): void {
   // Messages
   ipcMain.handle('messages:list', (_event, query: MessagesQuery) => messages.listMessages(query))
 
-  ipcMain.handle('messages:counts', async () => {
-    const settings = await store.getUiSettings()
-    const todoIds = settings.categories.filter((c) => c.action.kind === 'todo').map((c) => c.id)
-    return messages.getCounts(todoIds)
-  })
+  ipcMain.handle('messages:counts', () => messages.getCounts())
 
   ipcMain.handle('messages:get', (_event, accountId: string, uid: number) =>
     messages.getMessage(accountId, uid)
@@ -126,6 +190,14 @@ export function registerIpcHandlers(): void {
     (_event, accountId: string, uid: number, categoryId: string | null) => {
       messages.setCategory(accountId, uid, categoryId)
       notifyChanged(accountId)
+      // Propagate the manual re-tag to the cloud so other devices pick it up.
+      const messageId = messages.getMessageId(accountId, uid)
+      const message = messages.getMessage(accountId, uid)
+      pushMessageOverlay(messageId, {
+        categoryId,
+        aiSummary: message?.aiSummary ?? null,
+        categorizedAt: Date.now()
+      }).catch(() => {})
     }
   )
 
@@ -177,6 +249,51 @@ export function registerIpcHandlers(): void {
     triggerSync(accountId).catch((err) => console.error('[sync] post-unarchive sync failed:', err))
   })
 
+  ipcMain.handle('messages:send', async (_event, draft: EmailDraft) => {
+    const list = await accounts.list()
+    const account = list.find((a) => a.id === draft.accountId)
+    if (!account) throw new Error('Account not found.')
+    await sendDraft(account, draft)
+  })
+
+  // Contacts (derived address book)
+  ipcMain.handle('contacts:search', (_event, query: ContactsQuery) =>
+    contacts.searchContacts(query)
+  )
+
+  // macOS Contacts integration — pulls the user's address book via
+  // CNContactStore and lets the autocomplete override derived names with
+  // whatever the user has locally.
+  ipcMain.handle('contacts:macState', () => ({
+    status: macContacts.getAuthStatus(),
+    storedAddresses: macContacts.countStored(),
+    lastImportedAt: macContacts.lastImportedAt()
+  }))
+
+  ipcMain.handle('contacts:macRequestAccess', async () => {
+    const status = await macContacts.requestAccess()
+    // Auto-import on first grant so the user gets immediate value.
+    if (status === 'authorized' && macContacts.countStored() === 0) {
+      try {
+        await macContacts.importAll()
+      } catch (err) {
+        console.error('[mac-contacts] initial import failed:', err)
+      }
+    }
+    return status
+  })
+
+  ipcMain.handle('contacts:macImport', () => macContacts.importAll())
+
+  ipcMain.handle('contacts:macDisconnect', () => {
+    macContacts.clearAll()
+    return {
+      status: macContacts.getAuthStatus(),
+      storedAddresses: 0,
+      lastImportedAt: null
+    }
+  })
+
   // Sync
   ipcMain.handle('sync:trigger', (_event, accountId?: string) => triggerSync(accountId))
 
@@ -205,6 +322,38 @@ export function registerIpcHandlers(): void {
     messages.setCategory(accountId, uid, result.categoryId)
     messages.setAiSummary(accountId, uid, result.summary)
     notifyChanged(accountId)
+    pushMessageOverlay(message.messageId, {
+      categoryId: result.categoryId,
+      aiSummary: result.summary,
+      categorizedAt: Date.now()
+    }).catch(() => {})
     return result
+  })
+
+  ipcMain.handle('ai:draftReply', async (_event, request: AiDraftReplyRequest) => {
+    const settings = await store.getUiSettings()
+    if (!settings.aiProvider || !settings.aiModel) {
+      throw new Error('Pick an AI provider and model in Settings first.')
+    }
+    const apiKey = await store.getApiKey(settings.aiProvider)
+    if (!apiKey) {
+      throw new Error('No API key set for the configured AI provider.')
+    }
+    const source = request.source
+      ? messages.getMessage(request.source.accountId, request.source.uid)
+      : null
+    return draftReply(
+      {
+        source,
+        userPrompt: request.userPrompt,
+        mode: request.mode,
+        from: request.from,
+        existingBodyText: request.existingBodyText,
+        preferences: settings.aiReplyPreferences
+      },
+      settings.aiProvider,
+      settings.aiModel,
+      apiKey
+    )
   })
 }

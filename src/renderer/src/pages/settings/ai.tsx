@@ -1,7 +1,9 @@
 import {
   AI_PROVIDERS,
+  AI_REPLY_PREFERENCES_DEFAULT,
   type AiModel,
   type AiProvider,
+  type AiReplyPreferences,
   SUMMARY_LANGUAGES,
   type SummaryLanguage,
   type UiSettings
@@ -18,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
 import { ipcErrorMessage } from '@/lib/ipc-error'
 
 type LoadState = 'idle' | 'loading' | 'error'
@@ -33,12 +36,17 @@ export function SettingsAiPage(): React.JSX.Element {
   const [saveState, setSaveState] = useState<LoadState>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
+  const [replyPrefs, setReplyPrefs] = useState<AiReplyPreferences>(AI_REPLY_PREFERENCES_DEFAULT)
+  const [prefsSaveState, setPrefsSaveState] = useState<LoadState>('idle')
+  const [prefsSavedFlash, setPrefsSavedFlash] = useState(false)
+  const [prefsError, setPrefsError] = useState<string | null>(null)
 
   useEffect(() => {
     window.api.settings.get().then((current) => {
       setSettings(current)
       setProvider(current.aiProvider ?? '')
       setModel(current.aiModel ?? '')
+      setReplyPrefs(current.aiReplyPreferences ?? AI_REPLY_PREFERENCES_DEFAULT)
     })
   }, [])
 
@@ -93,6 +101,22 @@ export function SettingsAiPage(): React.JSX.Element {
     } catch (err) {
       setSaveError(ipcErrorMessage(err))
       setSaveState('error')
+    }
+  }
+
+  async function handleSaveReplyPrefs(): Promise<void> {
+    setPrefsSaveState('loading')
+    setPrefsError(null)
+    try {
+      const next = await window.api.settings.setAiReplyPreferences(replyPrefs)
+      setSettings(next)
+      setReplyPrefs(next.aiReplyPreferences)
+      setPrefsSaveState('idle')
+      setPrefsSavedFlash(true)
+      setTimeout(() => setPrefsSavedFlash(false), 1500)
+    } catch (err) {
+      setPrefsError(ipcErrorMessage(err))
+      setPrefsSaveState('error')
     }
   }
 
@@ -204,11 +228,51 @@ export function SettingsAiPage(): React.JSX.Element {
         {saveError && <span className="text-xs text-destructive">{saveError}</span>}
       </div>
 
+      <div className="space-y-4 border-t pt-6">
+        <div>
+          <h3 className="text-sm font-semibold">Reply instructions</h3>
+          <p className="text-sm text-muted-foreground">
+            Custom instructions the AI follows every time you use "Draft with AI" in the
+            compose window. Tone, signature, language, length — anything goes.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="reply-instructions" className="sr-only">
+            Custom instructions
+          </Label>
+          <Textarea
+            id="reply-instructions"
+            placeholder={
+              'e.g. "Write in Spanish, use tú not usted. Never use emojis. Keep replies under 4 sentences. Sign as Nicolás."'
+            }
+            value={replyPrefs.instructions}
+            onChange={(e) => setReplyPrefs((p) => ({ ...p, instructions: e.target.value }))}
+            disabled={prefsSaveState === 'loading'}
+            rows={8}
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button onClick={handleSaveReplyPrefs} disabled={prefsSaveState === 'loading'}>
+            {prefsSaveState === 'loading' && <Loader2Icon className="animate-spin" />}
+            Save instructions
+          </Button>
+          {prefsSavedFlash && (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <CheckIcon className="size-3.5" />
+              Saved
+            </span>
+          )}
+          {prefsError && <span className="text-xs text-destructive">{prefsError}</span>}
+        </div>
+      </div>
+
       <div className="space-y-2 border-t pt-6">
         <div>
           <h3 className="text-sm font-semibold">Summary language</h3>
           <p className="text-sm text-muted-foreground">
-            Language used for the two-line summary shown in the message list. Pick one to force
+            Language used for the one-sentence summary shown in the message list. Pick one to force
             every summary into that language, or leave it on auto to match the email's original
             language.
           </p>

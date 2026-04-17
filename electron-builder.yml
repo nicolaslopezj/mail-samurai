@@ -18,6 +18,7 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSDocumentsFolderUsageDescription: Mail Samurai stores local email metadata in your Documents folder.
+    - NSContactsUsageDescription: Mail Samurai uses your Contacts to autocomplete recipient names and addresses when composing email.
   hardenedRuntime: true
   gatekeeperAssess: false
   notarize: true

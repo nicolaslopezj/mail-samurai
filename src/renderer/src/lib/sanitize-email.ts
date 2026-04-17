@@ -27,6 +27,41 @@ export type SanitizeOptions = {
    * controls this via a user-facing setting.
    */
   loadRemoteImages: boolean
+  /**
+   * Host app theme. When `'dark'` and the email doesn't define its own
+   * background, we render it on a dark surface so it matches the app. If the
+   * email brings its own styling (typical of marketing/newsletters), we keep
+   * it on a light surface so we don't break its design — same heuristic Apple
+   * Mail uses.
+   */
+  theme?: 'light' | 'dark'
+}
+
+/**
+ * Walk the top of the tree looking for a declared background. Apple Mail's
+ * heuristic: if the email styles itself, we respect it; if it's bare HTML
+ * (plain text converted, simple replies), it's safe to flip to dark.
+ */
+function emailDeclaresOwnBackground(body: HTMLElement): boolean {
+  const queue: Element[] = Array.from(body.children)
+  let budget = 20
+  while (queue.length && budget-- > 0) {
+    const el = queue.shift()
+    if (!el) break
+    const bgcolor = el.getAttribute('bgcolor')
+    if (bgcolor && bgcolor.trim()) return true
+    const background = el.getAttribute('background')
+    if (background && background.trim()) return true
+    const style = el.getAttribute('style') ?? ''
+    if (/background(?:-color|-image)?\s*:/i.test(style)) return true
+    // Only the first couple of wrapper layers — we don't want a styled button
+    // deep in the tree to force light mode on an otherwise plain email.
+    if (el.tagName === 'DIV' || el.tagName === 'TABLE' || el.tagName === 'TBODY' ||
+        el.tagName === 'TR' || el.tagName === 'TD' || el.tagName === 'CENTER') {
+      for (const child of Array.from(el.children)) queue.push(child)
+    }
+  }
+  return false
 }
 
 export function buildSanitizedEmailDocument(
@@ -87,6 +122,7 @@ export function buildSanitizedEmailDocument(
     }
   }
 
+  const useDark = options.theme === 'dark' && !emailDeclaresOwnBackground(doc.body)
   const innerHtml = doc.body.innerHTML
 
   // Strict CSP: no scripts, no remote scripts/styles/fonts. `style-src
@@ -105,6 +141,11 @@ export function buildSanitizedEmailDocument(
     "frame-ancestors 'self'"
   ].join('; ')
 
+  const bg = useDark ? '#1c1c1e' : '#ffffff'
+  const fg = useDark ? '#f5f5f7' : '#000000'
+  const linkColor = useDark ? '#60a5fa' : '#2563eb'
+  const colorScheme = useDark ? 'dark' : 'light'
+
   return `<!doctype html>
 <html>
   <head>
@@ -112,7 +153,8 @@ export function buildSanitizedEmailDocument(
     <meta charset="utf-8">
     <base target="_blank">
     <style>
-      html, body { margin: 0; padding: 0; background: transparent; color: inherit; }
+      :root { color-scheme: ${colorScheme}; }
+      html, body { margin: 0; padding: 0; background: ${bg}; color: ${fg}; }
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         font-size: 14px;
@@ -124,7 +166,7 @@ export function buildSanitizedEmailDocument(
         cursor: text;
       }
       img { max-width: 100%; height: auto; }
-      a { color: #2563eb; }
+      a { color: ${linkColor}; }
     </style>
   </head>
   <body>${innerHtml}</body>

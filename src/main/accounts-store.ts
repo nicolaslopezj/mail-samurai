@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import type { Account, AccountDraft, ImapProvider } from '../shared/settings'
+import { deleteAllForAccount as deleteContactsForAccount } from './contacts-store'
 import { resolveImapHost } from './imap-test'
 import { deleteAllForAccount } from './messages-store'
 
@@ -105,6 +106,7 @@ export async function remove(id: string): Promise<void> {
   await write({ accounts: file.accounts.filter((a) => a.id !== id) })
   try {
     deleteAllForAccount(id)
+    deleteContactsForAccount(id)
   } catch (err) {
     // DB may not be initialized in tests / pre-init; safe to ignore.
     console.warn('[accounts] failed to clear cached messages on remove:', err)

@@ -2,9 +2,18 @@ import { access, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import {
+  AI_REPLY_PREFERENCES_DEFAULT,
   type AiProvider,
+  type AiReplyPreferences,
+  CATEGORY_COUNT_MODE_DEFAULT,
+  CATEGORY_COUNT_MODES,
+  CATEGORY_ICON_DEFAULT,
+  CATEGORY_ICONS,
   type Category,
   type CategoryAction,
+  type CategoryCountMode,
+  type CategoryIcon,
+  type CloudConfig,
   LOAD_REMOTE_IMAGES_DEFAULT,
   POLL_DEFAULT_MINUTES,
   POLL_MAX_MINUTES,
@@ -16,6 +25,19 @@ import {
   type ThemePreference,
   type UiSettings
 } from '../shared/settings'
+
+const AI_REPLY_INSTRUCTIONS_MAX = 4000
+
+type PersistedCloud = {
+  enabled: boolean
+  /** Turso / libSQL HTTP URL, e.g. `https://my-db-user.turso.io`. */
+  databaseUrl: string
+  /** Encrypted auth token, base64-encoded. */
+  encryptedToken: string | null
+  lastSyncedAt: number | null
+  lastEventId: number
+  listenOnly: boolean
+}
 
 type PersistedSettings = {
   aiProvider: AiProvider | null
@@ -29,6 +51,35 @@ type PersistedSettings = {
   uncategorizedAction: CategoryAction
   theme: ThemePreference
   summaryLanguage: SummaryLanguage
+  cloud: PersistedCloud
+  aiReplyPreferences: AiReplyPreferences
+}
+
+function emptyCloud(): PersistedCloud {
+  return {
+    enabled: false,
+    databaseUrl: '',
+    encryptedToken: null,
+    lastSyncedAt: null,
+    lastEventId: 0,
+    listenOnly: false
+  }
+}
+
+function sanitizeCloud(value: unknown): PersistedCloud {
+  if (!value || typeof value !== 'object') return emptyCloud()
+  const raw = value as Partial<PersistedCloud>
+  return {
+    enabled: Boolean(raw.enabled),
+    databaseUrl: typeof raw.databaseUrl === 'string' ? raw.databaseUrl.trim() : '',
+    encryptedToken:
+      typeof raw.encryptedToken === 'string' && raw.encryptedToken.length > 0
+        ? raw.encryptedToken
+        : null,
+    lastSyncedAt: typeof raw.lastSyncedAt === 'number' ? raw.lastSyncedAt : null,
+    lastEventId: typeof raw.lastEventId === 'number' ? raw.lastEventId : 0,
+    listenOnly: Boolean(raw.listenOnly)
+  }
 }
 
 /**
@@ -47,12 +98,22 @@ function makeInitialSettings(): PersistedSettings {
     categories: [],
     uncategorizedAction: { kind: 'none' },
     theme: THEME_DEFAULT,
-    summaryLanguage: SUMMARY_LANGUAGE_DEFAULT
+    summaryLanguage: SUMMARY_LANGUAGE_DEFAULT,
+    cloud: emptyCloud(),
+    aiReplyPreferences: { ...AI_REPLY_PREFERENCES_DEFAULT }
   }
 }
 
 function sanitizeTheme(value: unknown): ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system' ? value : THEME_DEFAULT
+}
+
+function sanitizeAiReplyPreferences(value: unknown): AiReplyPreferences {
+  if (!value || typeof value !== 'object') return { ...AI_REPLY_PREFERENCES_DEFAULT }
+  const raw = value as Partial<AiReplyPreferences>
+  const instructions =
+    typeof raw.instructions === 'string' ? raw.instructions.trim().slice(0, AI_REPLY_INSTRUCTIONS_MAX) : ''
+  return { instructions }
 }
 
 function sanitizeSummaryLanguage(value: unknown): SummaryLanguage {
@@ -90,7 +151,6 @@ function sanitizeAction(value: unknown): CategoryAction {
   const raw = value as { kind?: unknown; folder?: unknown; command?: unknown }
   switch (raw.kind) {
     case 'markRead':
-    case 'todo':
     case 'archive':
     case 'delete':
     case 'none':
@@ -110,6 +170,18 @@ function sanitizeAction(value: unknown): CategoryAction {
   }
 }
 
+function sanitizeIcon(value: unknown): CategoryIcon {
+  return typeof value === 'string' && (CATEGORY_ICONS as readonly string[]).includes(value)
+    ? (value as CategoryIcon)
+    : CATEGORY_ICON_DEFAULT
+}
+
+function sanitizeCountMode(value: unknown): CategoryCountMode {
+  return CATEGORY_COUNT_MODES.some((m) => m.value === value)
+    ? (value as CategoryCountMode)
+    : CATEGORY_COUNT_MODE_DEFAULT
+}
+
 function sanitizeCategories(value: unknown): Category[] {
   if (!Array.isArray(value)) return []
   const seen = new Set<string>()
@@ -122,7 +194,14 @@ function sanitizeCategories(value: unknown): Category[] {
     const instructions = typeof raw.instructions === 'string' ? raw.instructions.trim() : ''
     if (!id || !name || seen.has(id)) continue
     seen.add(id)
-    result.push({ id, name, instructions, action: sanitizeAction(raw.action) })
+    result.push({
+      id,
+      name,
+      instructions,
+      action: sanitizeAction(raw.action),
+      icon: sanitizeIcon(raw.icon),
+      countMode: sanitizeCountMode(raw.countMode)
+    })
   }
   return result
 }
@@ -144,7 +223,9 @@ async function read(): Promise<PersistedSettings> {
       categories: sanitizeCategories(parsed.categories),
       uncategorizedAction: sanitizeAction(parsed.uncategorizedAction),
       theme: sanitizeTheme(parsed.theme),
-      summaryLanguage: sanitizeSummaryLanguage(parsed.summaryLanguage)
+      summaryLanguage: sanitizeSummaryLanguage(parsed.summaryLanguage),
+      cloud: sanitizeCloud(parsed.cloud),
+      aiReplyPreferences: sanitizeAiReplyPreferences(parsed.aiReplyPreferences)
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return makeInitialSettings()
@@ -187,7 +268,20 @@ function toUi(settings: PersistedSettings): UiSettings {
     categories: settings.categories,
     uncategorizedAction: settings.uncategorizedAction,
     theme: settings.theme,
-    summaryLanguage: settings.summaryLanguage
+    summaryLanguage: settings.summaryLanguage,
+    cloud: toCloudUi(settings.cloud),
+    aiReplyPreferences: settings.aiReplyPreferences
+  }
+}
+
+function toCloudUi(cloud: PersistedCloud): CloudConfig {
+  return {
+    enabled: cloud.enabled,
+    databaseUrl: cloud.databaseUrl,
+    hasToken: Boolean(cloud.encryptedToken),
+    lastSyncedAt: cloud.lastSyncedAt,
+    lastEventId: cloud.lastEventId,
+    listenOnly: cloud.listenOnly
   }
 }
 
@@ -311,4 +405,119 @@ export async function setSummaryLanguage(language: SummaryLanguage): Promise<UiS
 
 export async function getSummaryLanguage(): Promise<SummaryLanguage> {
   return (await read()).summaryLanguage
+}
+
+export async function setAiReplyPreferences(
+  preferences: AiReplyPreferences
+): Promise<UiSettings> {
+  const current = await read()
+  const next: PersistedSettings = {
+    ...current,
+    aiReplyPreferences: sanitizeAiReplyPreferences(preferences)
+  }
+  await write(next)
+  return toUi(next)
+}
+
+export async function getAiReplyPreferences(): Promise<AiReplyPreferences> {
+  return (await read()).aiReplyPreferences
+}
+
+// ---------------------------------------------------------------------------
+// Cloud (Cloudflare D1) credentials
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist D1 credentials. The API token is encrypted via safeStorage before
+ * touching disk — same pattern as IMAP passwords and AI provider keys.
+ * Marks the connection as enabled; callers that want "disabled" use
+ * `disconnectCloud` instead.
+ */
+export async function setCloudCredentials(
+  databaseUrl: string,
+  authToken: string
+): Promise<UiSettings> {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('OS secure storage is not available; cannot store the cloud token safely.')
+  }
+  const current = await read()
+  const encryptedToken = safeStorage.encryptString(authToken).toString('base64')
+  const next: PersistedSettings = {
+    ...current,
+    cloud: {
+      enabled: true,
+      databaseUrl: databaseUrl.trim(),
+      encryptedToken,
+      // Reset both the pull clock and the event cursor so the first
+      // syncCloudNow after a (re)connect replays the whole event backlog.
+      lastSyncedAt: null,
+      lastEventId: 0,
+      // Preserve the user's "listen-only" preference across reconnects.
+      listenOnly: current.cloud.listenOnly
+    }
+  }
+  await write(next)
+  return toUi(next)
+}
+
+export async function disconnectCloud(): Promise<UiSettings> {
+  const current = await read()
+  const next: PersistedSettings = { ...current, cloud: emptyCloud() }
+  await write(next)
+  return toUi(next)
+}
+
+/**
+ * Load the plaintext credentials for the main process. Returns null when the
+ * user hasn't connected yet or when the token can't be decrypted (e.g. moved
+ * the settings file across machines, where safeStorage keys differ).
+ */
+export async function getCloudCredentials(): Promise<{
+  databaseUrl: string
+  authToken: string
+} | null> {
+  const settings = await read()
+  const { cloud } = settings
+  if (!cloud.enabled || !cloud.encryptedToken || !cloud.databaseUrl) {
+    return null
+  }
+  if (!safeStorage.isEncryptionAvailable()) return null
+  try {
+    const authToken = safeStorage.decryptString(Buffer.from(cloud.encryptedToken, 'base64'))
+    return { databaseUrl: cloud.databaseUrl, authToken }
+  } catch (err) {
+    console.error('[settings] could not decrypt cloud token:', err)
+    return null
+  }
+}
+
+export async function setCloudLastSyncedAt(ms: number): Promise<void> {
+  const current = await read()
+  const next: PersistedSettings = {
+    ...current,
+    cloud: { ...current.cloud, lastSyncedAt: ms }
+  }
+  await write(next)
+}
+
+/** Toggle the per-device "listen-only" flag. Preserved across reconnects. */
+export async function setCloudListenOnly(enabled: boolean): Promise<UiSettings> {
+  const current = await read()
+  const next: PersistedSettings = {
+    ...current,
+    cloud: { ...current.cloud, listenOnly: Boolean(enabled) }
+  }
+  await write(next)
+  return toUi(next)
+}
+
+/** Advance the cloud event cursor. Monotonic — callers should never decrease it. */
+export async function setCloudLastEventId(id: number): Promise<void> {
+  const current = await read()
+  if (id <= current.cloud.lastEventId) return
+  const next: PersistedSettings = {
+    ...current,
+    cloud: { ...current.cloud, lastEventId: id }
+  }
+  await write(next)
 }

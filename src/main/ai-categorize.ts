@@ -16,7 +16,7 @@ export type CategorizationResult = {
   /** One-sentence rationale from the model — useful for debugging / UI tooltip. */
   reason: string
   /**
-   * Two-line gist of the email, written in the email's own language.
+   * One-sentence gist of the email, written in the email's own language.
    * Shown in the message list in place of the raw snippet.
    */
   summary: string
@@ -53,10 +53,10 @@ export async function categorizeMessage(
   // language before writing the summary reliably keeps summaries in the right
   // language (without this field the model tends to drift to the user's locale).
   const schema = z.object({
-    language: z.string().max(40),
-    summary: z.string().max(260),
+    language: z.string(),
+    summary: z.string(),
     categoryId: z.enum(allowedIds),
-    reason: z.string().max(240)
+    reason: z.string()
   })
 
   const model = buildModel(provider, modelId, apiKey)
@@ -85,8 +85,8 @@ ${bodyText}`
 
 2. \`summary\`: write this ENTIRELY in ${forcedLanguage}, regardless of the
    email's original language. Translate if needed.
-   - Exactly two short lines separated by a single "\\n". No bullets, no
-     headings, no markdown. Under 260 chars total.
+   - Exactly ONE short sentence on a single line. No line breaks, no bullets,
+     no headings, no markdown. Under 200 chars.
    - Factual gist: what the email is about and what it asks for / announces.
      No marketing fluff, no greetings, no signatures.`
     : `1. \`language\`: detect the predominant language of the email body and output
@@ -96,8 +96,8 @@ ${bodyText}`
 
 2. \`summary\`: write this in the language you just declared in \`language\`.
    Do NOT translate into any other language under any circumstance.
-   - Exactly two short lines separated by a single "\\n". No bullets, no
-     headings, no markdown. Under 260 chars total.
+   - Exactly ONE short sentence on a single line. No line breaks, no bullets,
+     no headings, no markdown. Under 200 chars.
    - Factual gist: what the email is about and what it asks for / announces.
      No marketing fluff, no greetings, no signatures.`
 
@@ -147,13 +147,13 @@ Think: does the email clearly satisfy any rule above? If not, return "${NONE}".`
   }
 }
 
-/** Collapse the model's summary to at most two lines, trimming each line. */
+/** Collapse the model's summary to a single trimmed line. */
 function normalizeSummary(raw: string): string {
-  const lines = raw
+  return raw
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
-  return lines.slice(0, 2).join('\n')
+    .join(' ')
 }
 
 function buildModel(provider: AiProvider, modelId: string, apiKey: string) {

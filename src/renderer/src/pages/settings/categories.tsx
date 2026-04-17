@@ -1,8 +1,13 @@
 import {
   CATEGORY_ACTIONS,
+  CATEGORY_COUNT_MODE_DEFAULT,
+  CATEGORY_COUNT_MODES,
+  CATEGORY_ICON_DEFAULT,
+  CATEGORY_ICONS,
   type Category,
   type CategoryAction,
   type CategoryActionKind,
+  type CategoryCountMode,
   type UiSettings
 } from '@shared/settings'
 import { CheckIcon, Loader2Icon, PlusIcon, Trash2Icon } from 'lucide-react'
@@ -19,7 +24,9 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { categoryIconComponent } from '@/lib/category-icon'
 import { ipcErrorMessage } from '@/lib/ipc-error'
+import { cn } from '@/lib/utils'
 
 function AutoTextarea(props: React.ComponentProps<typeof Textarea>): React.JSX.Element {
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -41,7 +48,9 @@ function newCategory(): DraftCategory {
     id: crypto.randomUUID(),
     name: '',
     instructions: '',
-    action: { kind: 'none' }
+    action: { kind: 'none' },
+    icon: CATEGORY_ICON_DEFAULT,
+    countMode: CATEGORY_COUNT_MODE_DEFAULT
   }
 }
 
@@ -79,6 +88,8 @@ function sameList(a: DraftCategory[], b: DraftCategory[]): boolean {
       x.id !== y.id ||
       x.name !== y.name ||
       x.instructions !== y.instructions ||
+      x.icon !== y.icon ||
+      x.countMode !== y.countMode ||
       !actionsEqual(x.action, y.action)
     ) {
       return false
@@ -156,7 +167,9 @@ export function SettingsCategoriesPage(): React.JSX.Element {
           id: c.id,
           name: c.name.trim(),
           instructions: c.instructions.trim(),
-          action
+          action,
+          icon: c.icon,
+          countMode: c.countMode
         }
       }),
     [drafts]
@@ -300,6 +313,55 @@ export function SettingsCategoriesPage(): React.JSX.Element {
                   />
                 </div>
               )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Icon</Label>
+              <div className="grid grid-cols-8 gap-1.5 sm:grid-cols-12">
+                {CATEGORY_ICONS.map((name) => {
+                  const Icon = categoryIconComponent(name)
+                  const selected = category.icon === name
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => updateDraft(category.id, { icon: name })}
+                      aria-label={name}
+                      aria-pressed={selected}
+                      className={cn(
+                        'flex size-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+                        selected && 'border-primary bg-accent text-foreground'
+                      )}
+                    >
+                      <Icon className="size-4" />
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor={`cat-count-${category.id}`}>Sidebar badge shows</Label>
+              <Select
+                value={category.countMode}
+                onValueChange={(v) =>
+                  updateDraft(category.id, { countMode: v as CategoryCountMode })
+                }
+              >
+                <SelectTrigger id={`cat-count-${category.id}`} className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CATEGORY_COUNT_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {CATEGORY_COUNT_MODES.find((m) => m.value === category.countMode)?.hint}
+              </p>
             </div>
           </div>
         ))}

@@ -1,7 +1,6 @@
 import {
   type Account,
   accountDisplayName,
-  type CategorizationResult,
   type Category,
   type Message,
   type MessagesQuery,
@@ -10,15 +9,19 @@ import {
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  CornerUpLeftIcon,
+  CornerUpRightIcon,
   FilterIcon,
   Loader2Icon,
   MailIcon,
   MailOpenIcon,
   RefreshCwIcon,
+  ReplyAllIcon,
   SparklesIcon
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { toast } from 'sonner'
 
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import {
@@ -28,8 +31,11 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { ipcErrorMessage } from '@/lib/ipc-error'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ComposeDialog, type ComposeMode } from '@/components/compose-dialog'
+import { categoryIconComponent } from '@/lib/category-icon'
 import { buildSanitizedEmailDocument } from '@/lib/sanitize-email'
+import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 
 const OTHER_CATEGORY_VALUE = '__other__'
@@ -155,6 +161,12 @@ export function InboxPage({
     return map
   }, [accounts])
 
+  const categoryById = useMemo(() => {
+    const map = new Map<string, Category>()
+    for (const c of categories) map.set(c.id, c)
+    return map
+  }, [categories])
+
   const currentAccount = accountId ? accountById.get(accountId) : undefined
   const currentCategory = categoryId ? categories.find((c) => c.id === categoryId) : undefined
   const accountLabel = currentAccount ? accountDisplayName(currentAccount) : 'Inbox'
@@ -202,6 +214,128 @@ export function InboxPage({
     [visibleMessages]
   )
 
+  // Tracks the last archive/unarchive so Cmd+Z (or Ctrl+Z) can flip it back.
+  // Single-step undo — consumed after use, not a stack.
+  const lastArchiveActionRef = useRef<{
+    action: 'archive' | 'unarchive'
+    accountId: string
+    uid: number
+  } | null>(null)
+
+  const handleArchiveAction = useCallback(
+    async (action: 'archive' | 'unarchive', message: Message) => {
+      const wasArchived = message.archivedAt !== null
+      if (action === 'archive' && wasArchived) return
+      if (action === 'unarchive' && !wasArchived) return
+
+      // Move selection to a neighbor before the message disappears from the
+      // current view, so the reader pane lands on something instead of going
+      // blank. Reload from `messages:changed` will rebuild the list shortly.
+      if (visibleMessages) {
+        const idx = visibleMessages.findIndex(
+          (m) => m.accountId === message.accountId && m.uid === message.uid
+        )
+        if (idx >= 0) {
+          const neighbor = visibleMessages[idx + 1] ?? visibleMessages[idx - 1] ?? null
+          if (neighbor) {
+            setSelected({ accountId: neighbor.accountId, uid: neighbor.uid })
+          } else {
+            setSelected(null)
+          }
+        }
+      }
+
+      setMessages((prev) =>
+        prev
+          ? prev.filter((m) => !(m.accountId === message.accountId && m.uid === message.uid))
+          : prev
+      )
+
+      // Optimistic — toast and undo land instantly. The IPC round-trip
+      // happens in the background; on failure we revert and show an error.
+      lastArchiveActionRef.current = {
+        action,
+        accountId: message.accountId,
+        uid: message.uid
+      }
+      const subject = message.subject || '(no subject)'
+      const toastId = toast(action === 'archive' ? 'Archived' : 'Moved to inbox', {
+        description: subject,
+        duration: 8000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            undoLastArchiveActionRef.current?.()
+          }
+        }
+      })
+
+      try {
+        if (action === 'archive') {
+          await window.api.messages.archive(message.accountId, message.uid)
+        } else {
+          await window.api.messages.unarchive(message.accountId, message.uid)
+        }
+      } catch (err) {
+        console.error(`${action} failed:`, err)
+        toast.dismiss(toastId)
+        toast.error(action === 'archive' ? 'Archive failed' : 'Unarchive failed', {
+          description: subject
+        })
+        if (lastArchiveActionRef.current?.uid === message.uid) {
+          lastArchiveActionRef.current = null
+        }
+        loadMessages()
+      }
+    },
+    [visibleMessages, loadMessages]
+  )
+
+  const undoLastArchiveAction = useCallback(async () => {
+    const last = lastArchiveActionRef.current
+    if (!last) return
+    lastArchiveActionRef.current = null
+    try {
+      if (last.action === 'archive') {
+        await window.api.messages.unarchive(last.accountId, last.uid)
+      } else {
+        await window.api.messages.archive(last.accountId, last.uid)
+      }
+    } catch (err) {
+      console.error(`undo ${last.action} failed:`, err)
+      loadMessages()
+    }
+  }, [loadMessages])
+
+  // Toast's action callback is captured at toast()-call time, so it would
+  // see a stale `undoLastArchiveAction`. A ref bridges to the current one.
+  const undoLastArchiveActionRef = useRef(undoLastArchiveAction)
+  useEffect(() => {
+    undoLastArchiveActionRef.current = undoLastArchiveAction
+  }, [undoLastArchiveAction])
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key.toLowerCase() !== 'z') return
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.shiftKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      if (!lastArchiveActionRef.current) return
+      event.preventDefault()
+      undoLastArchiveAction()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [undoLastArchiveAction])
+
   const handleListKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {
       if (!visibleMessages || visibleMessages.length === 0) return
@@ -231,9 +365,18 @@ export function InboxPage({
       if (event.key === 'End') {
         event.preventDefault()
         selectMessageAtIndex(visibleMessages.length - 1, { focus: true })
+        return
+      }
+
+      if (event.key.toLowerCase() === 'e' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (selectedIndex < 0) return
+        const current = visibleMessages[selectedIndex]
+        if (!current) return
+        event.preventDefault()
+        handleArchiveAction(event.shiftKey ? 'unarchive' : 'archive', current)
       }
     },
-    [visibleMessages, selectMessageAtIndex, selectedIndex]
+    [visibleMessages, selectMessageAtIndex, selectedIndex, handleArchiveAction]
   )
 
   useEffect(() => {
@@ -255,37 +398,48 @@ export function InboxPage({
           <div className="drag flex h-11 shrink-0 items-center justify-between gap-2 border-b px-4">
             <h2 className="truncate text-sm font-semibold">{headerTitle}</h2>
             <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setUnreadOnly((v) => !v)}
-                className={cn(
-                  'no-drag rounded p-1 text-muted-foreground hover:bg-muted',
-                  unreadOnly && 'bg-muted text-foreground'
-                )}
-                aria-label="Show unread only"
-                aria-pressed={unreadOnly}
-                title={unreadOnly ? 'Showing unread only' : 'Show unread only'}
-              >
-                <FilterIcon className="size-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handleRefresh}
-                disabled={refreshing}
-                className="no-drag rounded p-1 text-muted-foreground hover:bg-muted disabled:opacity-50"
-                aria-label="Refresh"
-              >
-                {refreshing ? (
-                  <Loader2Icon className="size-4 animate-spin" />
-                ) : (
-                  <RefreshCwIcon className="size-4" />
-                )}
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setUnreadOnly((v) => !v)}
+                    className={cn(
+                      'no-drag rounded p-1 text-muted-foreground hover:bg-muted',
+                      unreadOnly && 'bg-muted text-foreground'
+                    )}
+                    aria-label="Show unread only"
+                    aria-pressed={unreadOnly}
+                  >
+                    <FilterIcon className="size-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {unreadOnly ? 'Showing unread only' : 'Show unread only'}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    className="no-drag rounded p-1 text-muted-foreground hover:bg-muted disabled:opacity-50"
+                    aria-label="Refresh"
+                  >
+                    {refreshing ? (
+                      <Loader2Icon className="size-4 animate-spin" />
+                    ) : (
+                      <RefreshCwIcon className="size-4" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Sync now</TooltipContent>
+              </Tooltip>
             </div>
           </div>
           <div
             ref={listRef}
-            className="flex-1 overflow-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            className="flex-1 overflow-auto focus:outline-none"
             tabIndex={0}
             role="listbox"
             aria-label="Messages"
@@ -379,11 +533,13 @@ export function InboxPage({
                             {m.aiSummary || m.snippet}
                           </div>
                         )}
-                        {!accountId && account && (
-                          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                            {accountDisplayName(account)}
-                          </div>
-                        )}
+                        <MessageMeta
+                          message={m}
+                          category={
+                            m.categoryId ? (categoryById.get(m.categoryId) ?? null) : null
+                          }
+                          account={!accountId ? (account ?? null) : null}
+                        />
                       </button>
                     </li>
                   )
@@ -401,60 +557,112 @@ export function InboxPage({
   )
 }
 
-function ToolbarButton({
-  label,
-  onClick,
-  children
+function MessageMeta({
+  message,
+  category,
+  account
 }: {
-  label: string
-  onClick: () => void
-  children: React.ReactNode
-}): React.JSX.Element {
+  message: Message
+  category: Category | null
+  account: Account | null
+}): React.JSX.Element | null {
+  const isAnalyzing = message.categorizedAt === null
+  const CategoryIcon = category ? categoryIconComponent(category.icon) : null
+  const categoryLabel = isAnalyzing
+    ? null
+    : category
+      ? category.name
+      : message.categoryId === null
+        ? 'Other'
+        : null
+  const accountLabel = account ? accountDisplayName(account) : null
+
+  if (!isAnalyzing && !categoryLabel && !accountLabel) return null
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      className="no-drag flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-    >
-      {children}
-    </button>
+    <div className="flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+      {isAnalyzing ? (
+        <span className="flex items-center gap-1">
+          <Loader2Icon className="size-3 animate-spin" />
+          <span>Analyzing…</span>
+        </span>
+      ) : (
+        categoryLabel && (
+          <span className="flex items-center gap-1">
+            {CategoryIcon && <CategoryIcon className="size-3" />}
+            <span>{categoryLabel}</span>
+          </span>
+        )
+      )}
+      {(isAnalyzing || categoryLabel) && accountLabel && <span aria-hidden="true">·</span>}
+      {accountLabel && <span>{accountLabel}</span>}
+    </div>
   )
 }
 
-type CategorizeState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'done'; result: CategorizationResult }
-  | { status: 'error'; message: string }
+function ToolbarButton({
+  label,
+  hotkey,
+  onClick,
+  disabled,
+  children
+}: {
+  label: string
+  hotkey?: string
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          aria-label={label}
+          className="no-drag flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>
+        <span>{label}</span>
+        {hotkey && <span className="ml-2 text-muted opacity-80">{hotkey}</span>}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 
 function MessageToolbar({
   message,
   onToggleSeen,
   categories,
-  categorizeState,
-  onCategorize,
   onSetCategory,
   onArchiveToggle,
-  archiving
+  archiving,
+  onReply,
+  onReplyAll,
+  onForward,
+  onReplyAllWithAi
 }: {
   message: MessageWithBody
   onToggleSeen: () => void
   categories: Category[]
-  categorizeState: CategorizeState
-  onCategorize: () => void
   onSetCategory: (categoryId: string | null) => void
   onArchiveToggle: () => void
   archiving: boolean
+  onReply: () => void
+  onReplyAll: () => void
+  onForward: () => void
+  onReplyAllWithAi: () => void
 }): React.JSX.Element {
-  const { status } = categorizeState
   const isCategorized = message.categorizedAt !== null
   // Radix Select treats '' as the placeholder state — use it when the message
   // has never been categorized so the trigger falls back to the placeholder
   // text instead of highlighting an item that isn't really selected.
   const selectValue = !isCategorized ? '' : (message.categoryId ?? OTHER_CATEGORY_VALUE)
-  const aiReason = status === 'done' ? categorizeState.result.reason : null
   const isArchived = message.archivedAt !== null
 
   return (
@@ -465,13 +673,11 @@ function MessageToolbar({
       >
         {message.seen ? <MailIcon className="size-4" /> : <MailOpenIcon className="size-4" />}
       </ToolbarButton>
-      <button
-        type="button"
+      <ToolbarButton
+        label={isArchived ? 'Move back to inbox' : 'Archive'}
+        hotkey={isArchived ? '⇧E' : 'E'}
         onClick={onArchiveToggle}
         disabled={archiving}
-        title={isArchived ? 'Move back to inbox' : 'Archive'}
-        aria-label={isArchived ? 'Unarchive' : 'Archive'}
-        className="no-drag flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
       >
         {archiving ? (
           <Loader2Icon className="size-4 animate-spin" />
@@ -480,21 +686,20 @@ function MessageToolbar({
         ) : (
           <ArchiveIcon className="size-4" />
         )}
-      </button>
-      <button
-        type="button"
-        onClick={onCategorize}
-        disabled={status === 'loading'}
-        title="Categorize with AI"
-        aria-label="Categorize with AI"
-        className="no-drag flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
-      >
-        {status === 'loading' ? (
-          <Loader2Icon className="size-4 animate-spin" />
-        ) : (
-          <SparklesIcon className="size-4" />
-        )}
-      </button>
+      </ToolbarButton>
+      <span className="mx-1 h-5 w-px bg-border" />
+      <ToolbarButton label="Reply" onClick={onReply}>
+        <CornerUpLeftIcon className="size-4" />
+      </ToolbarButton>
+      <ToolbarButton label="Reply All" onClick={onReplyAll}>
+        <ReplyAllIcon className="size-4" />
+      </ToolbarButton>
+      <ToolbarButton label="Forward" onClick={onForward}>
+        <CornerUpRightIcon className="size-4" />
+      </ToolbarButton>
+      <ToolbarButton label="Reply All with AI" onClick={onReplyAllWithAi}>
+        <SparklesIcon className="size-4" />
+      </ToolbarButton>
       <Select
         value={selectValue}
         onValueChange={(value) => {
@@ -505,7 +710,6 @@ function MessageToolbar({
           size="sm"
           className="no-drag ml-1 h-7 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-muted data-[state=open]:bg-muted"
           aria-label="Category"
-          title={aiReason ?? undefined}
         >
           <SelectValue placeholder="Uncategorized" />
         </SelectTrigger>
@@ -518,11 +722,6 @@ function MessageToolbar({
           ))}
         </SelectContent>
       </Select>
-      {status === 'error' && (
-        <span className="ml-1 truncate text-xs text-destructive" title={categorizeState.message}>
-          {categorizeState.message}
-        </span>
-      )}
     </div>
   )
 }
@@ -536,8 +735,22 @@ function MessageReader({
   const [loading, setLoading] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [categories, setCategories] = useState<Category[]>([])
-  const [categorizeState, setCategorizeState] = useState<CategorizeState>({ status: 'idle' })
   const [archiving, setArchiving] = useState(false)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [compose, setCompose] = useState<{
+    mode: ComposeMode
+    aiPromptOpen?: boolean
+  } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.accounts.list().then((list) => {
+      if (!cancelled) setAccounts(list)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Read the user's preference whenever a different message is opened —
   // gives newly-toggled values a chance to take effect without a full reload.
@@ -557,11 +770,8 @@ function MessageReader({
   useEffect(() => {
     if (!selected) {
       setMessage(null)
-      setCategorizeState({ status: 'idle' })
       return
     }
-    // Drop any previous categorization result when opening a different message.
-    setCategorizeState({ status: 'idle' })
     let cancelled = false
     setLoading(true)
     window.api.messages
@@ -586,6 +796,34 @@ function MessageReader({
       cancelled = true
     }
   }, [selected])
+
+  // R → Reply All, F → Forward, while a message is open and focus isn't in
+  // an editable field (the message list listbox counts as non-editable).
+  useEffect(() => {
+    if (!message || compose) return
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+      const target = event.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      const key = event.key.toLowerCase()
+      if (key === 'r') {
+        event.preventDefault()
+        setCompose({ mode: 'replyAll' })
+      } else if (key === 'f') {
+        event.preventDefault()
+        setCompose({ mode: 'forward' })
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [message, compose])
 
   if (!selected) {
     return (
@@ -615,27 +853,12 @@ function MessageReader({
     }
   }
 
-  async function handleCategorize(): Promise<void> {
-    if (!message) return
-    setCategorizeState({ status: 'loading' })
-    try {
-      const result = await window.api.ai.categorize(message.accountId, message.uid)
-      setCategorizeState({ status: 'done', result })
-      setMessage((prev) =>
-        prev ? { ...prev, categoryId: result.categoryId, categorizedAt: Date.now() } : prev
-      )
-    } catch (err) {
-      setCategorizeState({ status: 'error', message: ipcErrorMessage(err) })
-    }
-  }
-
   async function handleSetCategory(categoryId: string | null): Promise<void> {
     if (!message) return
     if (message.categorizedAt !== null && message.categoryId === categoryId) return
     const previousCategoryId = message.categoryId
     const previousCategorizedAt = message.categorizedAt
     setMessage({ ...message, categoryId, categorizedAt: Date.now() })
-    setCategorizeState({ status: 'idle' })
     try {
       await window.api.messages.setCategory(message.accountId, message.uid, categoryId)
     } catch (err) {
@@ -674,13 +897,20 @@ function MessageReader({
         message={message}
         onToggleSeen={handleToggleSeen}
         categories={categories}
-        categorizeState={categorizeState}
-        onCategorize={handleCategorize}
         onSetCategory={handleSetCategory}
         onArchiveToggle={handleArchiveToggle}
         archiving={archiving}
+        onReply={() => setCompose({ mode: 'reply' })}
+        onReplyAll={() => setCompose({ mode: 'replyAll' })}
+        onForward={() => setCompose({ mode: 'forward' })}
+        onReplyAllWithAi={() => setCompose({ mode: 'replyAll', aiPromptOpen: true })}
       />
       <header className="shrink-0 border-b px-6 pt-6 pb-4">
+        {message.aiSummary && (
+          <div className="mb-4 rounded-lg bg-muted px-4 py-3 text-sm whitespace-pre-line text-muted-foreground">
+            {message.aiSummary}
+          </div>
+        )}
         <h1 className="text-xl font-semibold">{message.subject || '(no subject)'}</h1>
         <div className="mt-2 text-sm text-muted-foreground">
           <span className="font-medium text-foreground">{senderLabel(message)}</span>
@@ -714,6 +944,17 @@ function MessageReader({
           <p className="text-sm text-muted-foreground">(empty message)</p>
         </div>
       )}
+      <ComposeDialog
+        open={compose !== null}
+        onOpenChange={(open) => {
+          if (!open) setCompose(null)
+        }}
+        mode={compose?.mode ?? 'reply'}
+        source={message}
+        accounts={accounts}
+        defaultAccountId={message.accountId}
+        initialAiPromptOpen={compose?.aiPromptOpen ?? false}
+      />
     </article>
   )
 }
@@ -744,9 +985,10 @@ function SandboxedHtmlFrame({
   attachments: MessageWithBody['inlineAttachments']
   loadRemoteImages: boolean
 }): React.JSX.Element {
+  const { resolved: theme } = useTheme()
   const srcDoc = useMemo(
-    () => buildSanitizedEmailDocument(html, attachments, { loadRemoteImages }),
-    [html, attachments, loadRemoteImages]
+    () => buildSanitizedEmailDocument(html, attachments, { loadRemoteImages, theme }),
+    [html, attachments, loadRemoteImages, theme]
   )
 
   return (
@@ -757,7 +999,7 @@ function SandboxedHtmlFrame({
       sandbox="allow-popups allow-popups-to-escape-sandbox"
       srcDoc={srcDoc}
       className="block h-full w-full border-0 bg-transparent"
-      style={{ colorScheme: 'light' }}
+      style={{ colorScheme: theme }}
     />
   )
 }
