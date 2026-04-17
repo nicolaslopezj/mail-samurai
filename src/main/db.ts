@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS messages (
   body_text     TEXT,
   body_html     TEXT,
   fetched_at_ms INTEGER NOT NULL,
+  archived_at_ms INTEGER,
   PRIMARY KEY (account_id, uid_validity, uid)
 );
 
@@ -56,8 +57,33 @@ export function initDb(): Database.Database {
   instance.pragma('journal_mode = WAL')
   instance.pragma('synchronous = NORMAL')
   instance.exec(SCHEMA)
+  migrate(instance)
   db = instance
   return instance
+}
+
+/**
+ * Lightweight forward-only migrations — additive columns we added after the
+ * initial schema. `CREATE TABLE IF NOT EXISTS` takes care of brand-new DBs;
+ * this handles existing user DBs that were built with an older shape.
+ */
+function migrate(instance: Database.Database): void {
+  const cols = instance.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[]
+  const names = new Set(cols.map((c) => c.name))
+  if (!names.has('category_id')) {
+    instance.exec(`ALTER TABLE messages ADD COLUMN category_id TEXT`)
+  }
+  if (!names.has('ai_summary')) {
+    instance.exec(`ALTER TABLE messages ADD COLUMN ai_summary TEXT`)
+  }
+  if (!names.has('categorized_at')) {
+    instance.exec(`ALTER TABLE messages ADD COLUMN categorized_at INTEGER`)
+  }
+  if (!names.has('archived_at_ms')) {
+    instance.exec(`ALTER TABLE messages ADD COLUMN archived_at_ms INTEGER`)
+  }
+  instance.exec(`CREATE INDEX IF NOT EXISTS idx_messages_category ON messages(category_id)`)
+  instance.exec(`CREATE INDEX IF NOT EXISTS idx_messages_archived ON messages(archived_at_ms)`)
 }
 
 export function getDb(): Database.Database {

@@ -2,8 +2,10 @@ import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
+import { startAutoUpdater } from './auto-updater'
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
+import { initSettings } from './settings-store'
 import { startScheduler } from './sync-scheduler'
 
 function createWindow(): void {
@@ -34,7 +36,7 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.nicolaslopezj.mail-samurai')
 
   app.on('browser-window-created', (_, window) => {
@@ -42,8 +44,10 @@ app.whenReady().then(() => {
   })
 
   initDb()
+  await initSettings()
   registerIpcHandlers()
   startScheduler()
+  startAutoUpdater()
   createWindow()
 
   app.on('activate', () => {

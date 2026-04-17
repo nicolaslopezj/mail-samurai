@@ -89,6 +89,7 @@ function actionHint(kind: CategoryActionKind): string {
 export function SettingsCategoriesPage(): React.JSX.Element {
   const [settings, setSettings] = useState<UiSettings | null>(null)
   const [drafts, setDrafts] = useState<DraftCategory[]>([])
+  const [uncategorized, setUncategorized] = useState<CategoryAction>({ kind: 'none' })
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
@@ -97,6 +98,7 @@ export function SettingsCategoriesPage(): React.JSX.Element {
     window.api.settings.get().then((current) => {
       setSettings(current)
       setDrafts(current.categories)
+      setUncategorized(current.uncategorizedAction)
     })
   }, [])
 
@@ -149,9 +151,22 @@ export function SettingsCategoriesPage(): React.JSX.Element {
     [drafts]
   )
 
+  const trimmedUncategorized = useMemo<CategoryAction>(() => {
+    if (uncategorized.kind === 'moveToFolder')
+      return { kind: 'moveToFolder', folder: uncategorized.folder.trim() }
+    if (uncategorized.kind === 'runCommand')
+      return { kind: 'runCommand', command: uncategorized.command.trim() }
+    return uncategorized
+  }, [uncategorized])
+
   const hasEmptyName = trimmed.some((c) => c.name.length === 0)
-  const hasMissingActionParam = trimmed.some((c) => actionParamMissing(c.action))
-  const changed = settings ? !sameList(trimmed, settings.categories) : false
+  const hasMissingActionParam =
+    trimmed.some((c) => actionParamMissing(c.action)) || actionParamMissing(trimmedUncategorized)
+  const categoriesChanged = settings ? !sameList(trimmed, settings.categories) : false
+  const uncategorizedChanged = settings
+    ? !actionsEqual(trimmedUncategorized, settings.uncategorizedAction)
+    : false
+  const changed = categoriesChanged || uncategorizedChanged
   const canSave = changed && !hasEmptyName && !hasMissingActionParam
 
   async function handleSave(): Promise<void> {
@@ -159,9 +174,10 @@ export function SettingsCategoriesPage(): React.JSX.Element {
     setSaveState('loading')
     setSaveError(null)
     try {
-      const next = await window.api.settings.setCategories(trimmed)
+      const next = await window.api.settings.setCategories(trimmed, trimmedUncategorized)
       setSettings(next)
       setDrafts(next.categories)
+      setUncategorized(next.uncategorizedAction)
       setSaveState('idle')
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1500)
@@ -280,6 +296,67 @@ export function SettingsCategoriesPage(): React.JSX.Element {
           <PlusIcon />
           Add category
         </Button>
+      </div>
+
+      <div className="space-y-3 rounded-md border p-4">
+        <div>
+          <h3 className="text-sm font-semibold">When a message matches no category</h3>
+          <p className="text-xs text-muted-foreground">
+            Fallback action for incoming mail that doesn't fit any of the categories above.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="uncategorized-action">Action</Label>
+          <Select
+            value={uncategorized.kind}
+            onValueChange={(v) =>
+              setUncategorized((prev) => switchActionKind(prev, v as CategoryActionKind))
+            }
+          >
+            <SelectTrigger id="uncategorized-action" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CATEGORY_ACTIONS.map((a) => (
+                <SelectItem key={a.value} value={a.value}>
+                  {a.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">{actionHint(uncategorized.kind)}</p>
+
+          {uncategorized.kind === 'moveToFolder' && (
+            <div className="space-y-1 pt-1">
+              <Label htmlFor="uncategorized-folder" className="text-xs">
+                Folder name
+              </Label>
+              <Input
+                id="uncategorized-folder"
+                placeholder="e.g. Unsorted"
+                value={uncategorized.folder}
+                onChange={(e) => setUncategorized({ kind: 'moveToFolder', folder: e.target.value })}
+              />
+            </div>
+          )}
+
+          {uncategorized.kind === 'runCommand' && (
+            <div className="space-y-1 pt-1">
+              <Label htmlFor="uncategorized-cmd" className="text-xs">
+                Command
+              </Label>
+              <Input
+                id="uncategorized-cmd"
+                placeholder="e.g. /usr/local/bin/notify {{subject}}"
+                value={uncategorized.command}
+                onChange={(e) => setUncategorized({ kind: 'runCommand', command: e.target.value })}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3 pt-2">

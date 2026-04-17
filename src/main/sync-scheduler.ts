@@ -1,8 +1,9 @@
 import { BrowserWindow } from 'electron'
+import { ARCHIVE_RETENTION_MS } from '../shared/settings'
 import * as accounts from './accounts-store'
 import { syncAccount } from './imap-sync'
-import { pruneOlderThan } from './messages-store'
-import { getPollIntervalMinutes, getRetentionHours } from './settings-store'
+import { prunePermanent } from './messages-store'
+import { getPollIntervalMinutes, getSyncFromMs } from './settings-store'
 
 const STARTUP_DELAY_MS = 2_000
 
@@ -24,10 +25,10 @@ async function runOne(accountId: string): Promise<void> {
       const list = await accounts.list()
       const account = list.find((a) => a.id === accountId)
       if (!account) return
-      const retentionHours = await getRetentionHours()
-      const result = await syncAccount(account, retentionHours)
+      const syncFromMs = await getSyncFromMs()
+      const result = await syncAccount(account, syncFromMs)
       console.log(
-        `[sync] ${account.email} added=${result.added} updated=${result.updated} pruned=${result.pruned}`
+        `[sync] ${account.email} added=${result.added} updated=${result.updated} archived=${result.archived} deleted=${result.deleted}`
       )
       notifyChanged(accountId)
     } catch (err) {
@@ -42,9 +43,9 @@ async function runOne(accountId: string): Promise<void> {
 
 export async function syncAll(): Promise<void> {
   const list = await accounts.list()
-  // Defense-in-depth prune across all accounts using current retention.
-  const retentionHours = await getRetentionHours()
-  pruneOlderThan(Date.now() - retentionHours * 3_600_000)
+  // Defense-in-depth global prune across all accounts.
+  const syncFromMs = await getSyncFromMs()
+  prunePermanent(syncFromMs, ARCHIVE_RETENTION_MS)
   await Promise.all(list.map((a) => runOne(a.id)))
   notifyChanged()
 }

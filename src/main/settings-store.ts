@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { access, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import {
@@ -9,9 +9,11 @@ import {
   POLL_DEFAULT_MINUTES,
   POLL_MAX_MINUTES,
   POLL_MIN_MINUTES,
-  RETENTION_DEFAULT_HOURS,
-  RETENTION_MAX_HOURS,
-  RETENTION_MIN_HOURS,
+  SUMMARY_LANGUAGE_DEFAULT,
+  SUMMARY_LANGUAGES,
+  type SummaryLanguage,
+  THEME_DEFAULT,
+  type ThemePreference,
   type UiSettings
 } from '../shared/settings'
 
@@ -20,32 +22,57 @@ type PersistedSettings = {
   aiModel: string | null
   /** Per-provider encrypted API key, base64-encoded. */
   encryptedKeys: Partial<Record<AiProvider, string>>
-  retentionHours: number
+  syncFromMs: number
   pollIntervalMinutes: number
   loadRemoteImages: boolean
   categories: Category[]
+  uncategorizedAction: CategoryAction
+  theme: ThemePreference
+  summaryLanguage: SummaryLanguage
 }
 
-const DEFAULT_SETTINGS: PersistedSettings = {
-  aiProvider: null,
-  aiModel: null,
-  encryptedKeys: {},
-  retentionHours: RETENTION_DEFAULT_HOURS,
-  pollIntervalMinutes: POLL_DEFAULT_MINUTES,
-  loadRemoteImages: LOAD_REMOTE_IMAGES_DEFAULT,
-  categories: []
+/**
+ * Build the settings that get persisted the very first time the app runs.
+ * `syncFromMs` is pinned to the install moment so categorization starts from
+ * here; later reads see the stored value, not a moving default.
+ */
+function makeInitialSettings(): PersistedSettings {
+  return {
+    aiProvider: null,
+    aiModel: null,
+    encryptedKeys: {},
+    syncFromMs: Date.now(),
+    pollIntervalMinutes: POLL_DEFAULT_MINUTES,
+    loadRemoteImages: LOAD_REMOTE_IMAGES_DEFAULT,
+    categories: [],
+    uncategorizedAction: { kind: 'none' },
+    theme: THEME_DEFAULT,
+    summaryLanguage: SUMMARY_LANGUAGE_DEFAULT
+  }
+}
+
+function sanitizeTheme(value: unknown): ThemePreference {
+  return value === 'light' || value === 'dark' || value === 'system' ? value : THEME_DEFAULT
+}
+
+function sanitizeSummaryLanguage(value: unknown): SummaryLanguage {
+  return SUMMARY_LANGUAGES.some((l) => l.value === value)
+    ? (value as SummaryLanguage)
+    : SUMMARY_LANGUAGE_DEFAULT
 }
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
-function clampRetention(value: unknown): number {
+function sanitizeSyncFromMs(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(n)) return RETENTION_DEFAULT_HOURS
+  if (!Number.isFinite(n)) return Date.now()
   const rounded = Math.round(n)
-  if (rounded < RETENTION_MIN_HOURS) return RETENTION_MIN_HOURS
-  if (rounded > RETENTION_MAX_HOURS) return RETENTION_MAX_HOURS
+  // Clamp to a sane window: no earlier than 1970, no later than now.
+  if (rounded < 0) return 0
+  const now = Date.now()
+  if (rounded > now) return now
   return rounded
 }
 
@@ -108,22 +135,42 @@ async function read(): Promise<PersistedSettings> {
       aiProvider: parsed.aiProvider ?? null,
       aiModel: parsed.aiModel ?? null,
       encryptedKeys: parsed.encryptedKeys ?? {},
-      retentionHours: clampRetention(parsed.retentionHours ?? RETENTION_DEFAULT_HOURS),
+      syncFromMs: sanitizeSyncFromMs(parsed.syncFromMs),
       pollIntervalMinutes: clampPollInterval(parsed.pollIntervalMinutes ?? POLL_DEFAULT_MINUTES),
       loadRemoteImages:
         typeof parsed.loadRemoteImages === 'boolean'
           ? parsed.loadRemoteImages
           : LOAD_REMOTE_IMAGES_DEFAULT,
-      categories: sanitizeCategories(parsed.categories)
+      categories: sanitizeCategories(parsed.categories),
+      uncategorizedAction: sanitizeAction(parsed.uncategorizedAction),
+      theme: sanitizeTheme(parsed.theme),
+      summaryLanguage: sanitizeSummaryLanguage(parsed.summaryLanguage)
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_SETTINGS }
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return makeInitialSettings()
     throw err
   }
 }
 
 async function write(settings: PersistedSettings): Promise<void> {
   await writeFile(settingsPath(), JSON.stringify(settings, null, 2), 'utf8')
+}
+
+/**
+ * Write the initial settings file if it doesn't exist yet. Run once at
+ * startup so `syncFromMs` is pinned to the very first launch — later reads
+ * return the stored value instead of a moving default.
+ */
+export async function initSettings(): Promise<void> {
+  try {
+    await access(settingsPath())
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      await write(makeInitialSettings())
+      return
+    }
+    throw err
+  }
 }
 
 function toUi(settings: PersistedSettings): UiSettings {
@@ -134,10 +181,13 @@ function toUi(settings: PersistedSettings): UiSettings {
       openai: Boolean(settings.encryptedKeys.openai),
       google: Boolean(settings.encryptedKeys.google)
     },
-    retentionHours: settings.retentionHours,
+    syncFromMs: settings.syncFromMs,
     pollIntervalMinutes: settings.pollIntervalMinutes,
     loadRemoteImages: settings.loadRemoteImages,
-    categories: settings.categories
+    categories: settings.categories,
+    uncategorizedAction: settings.uncategorizedAction,
+    theme: settings.theme,
+    summaryLanguage: settings.summaryLanguage
   }
 }
 
@@ -176,15 +226,15 @@ export async function getApiKey(provider: AiProvider): Promise<string | null> {
   return safeStorage.decryptString(Buffer.from(blob, 'base64'))
 }
 
-export async function setRetentionHours(hours: number): Promise<UiSettings> {
+export async function setSyncFromMs(ms: number): Promise<UiSettings> {
   const current = await read()
-  const next: PersistedSettings = { ...current, retentionHours: clampRetention(hours) }
+  const next: PersistedSettings = { ...current, syncFromMs: sanitizeSyncFromMs(ms) }
   await write(next)
   return toUi(next)
 }
 
-export async function getRetentionHours(): Promise<number> {
-  return (await read()).retentionHours
+export async function getSyncFromMs(): Promise<number> {
+  return (await read()).syncFromMs
 }
 
 export async function setPollIntervalMinutes(minutes: number): Promise<UiSettings> {
@@ -208,9 +258,37 @@ export async function setLoadRemoteImages(enabled: boolean): Promise<UiSettings>
   return toUi(next)
 }
 
-export async function setCategories(categories: Category[]): Promise<UiSettings> {
+export async function setCategories(
+  categories: Category[],
+  uncategorizedAction: CategoryAction
+): Promise<UiSettings> {
   const current = await read()
-  const next: PersistedSettings = { ...current, categories: sanitizeCategories(categories) }
+  const next: PersistedSettings = {
+    ...current,
+    categories: sanitizeCategories(categories),
+    uncategorizedAction: sanitizeAction(uncategorizedAction)
+  }
   await write(next)
   return toUi(next)
+}
+
+export async function setTheme(theme: ThemePreference): Promise<UiSettings> {
+  const current = await read()
+  const next: PersistedSettings = { ...current, theme: sanitizeTheme(theme) }
+  await write(next)
+  return toUi(next)
+}
+
+export async function setSummaryLanguage(language: SummaryLanguage): Promise<UiSettings> {
+  const current = await read()
+  const next: PersistedSettings = {
+    ...current,
+    summaryLanguage: sanitizeSummaryLanguage(language)
+  }
+  await write(next)
+  return toUi(next)
+}
+
+export async function getSummaryLanguage(): Promise<SummaryLanguage> {
+  return (await read()).summaryLanguage
 }

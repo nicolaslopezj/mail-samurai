@@ -1,26 +1,17 @@
 import {
+  ARCHIVE_RETENTION_MS,
   POLL_DEFAULT_MINUTES,
   POLL_MAX_MINUTES,
   POLL_MIN_MINUTES,
-  RETENTION_DEFAULT_HOURS,
-  RETENTION_MAX_HOURS,
-  RETENTION_MIN_HOURS,
   type UiSettings
 } from '@shared/settings'
 import { CheckIcon, Loader2Icon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ipcErrorMessage } from '@/lib/ipc-error'
-
-const RETENTION_PRESETS = [
-  { label: '24 h', hours: 24 },
-  { label: '3 days', hours: 72 },
-  { label: '7 days', hours: 168 },
-  { label: '30 days', hours: 720 }
-]
 
 const POLL_PRESETS = [
   { label: '5 min', minutes: 5 },
@@ -29,11 +20,39 @@ const POLL_PRESETS = [
   { label: '1 hour', minutes: 60 }
 ]
 
+const ARCHIVE_RETENTION_DAYS = Math.round(ARCHIVE_RETENTION_MS / (24 * 60 * 60 * 1000))
+
 type SaveState = 'idle' | 'loading' | 'error'
+
+/** Convert an epoch ms to the YYYY-MM-DD local date string for <input type="date">. */
+function msToDateInput(ms: number): string {
+  const d = new Date(ms)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+/** Parse a YYYY-MM-DD string as local midnight. Returns NaN if malformed. */
+function dateInputToMs(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return Number.NaN
+  const year = Number(match[1])
+  const month = Number(match[2]) - 1
+  const day = Number(match[3])
+  const d = new Date(year, month, day, 0, 0, 0, 0)
+  return d.getTime()
+}
+
+function todayMidnightMs(): number {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
 
 export function SettingsSyncPage(): React.JSX.Element {
   const [settings, setSettings] = useState<UiSettings | null>(null)
-  const [hours, setHours] = useState<string>(String(RETENTION_DEFAULT_HOURS))
+  const [syncFromDate, setSyncFromDate] = useState<string>('')
   const [pollMinutes, setPollMinutes] = useState<string>(String(POLL_DEFAULT_MINUTES))
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -44,26 +63,25 @@ export function SettingsSyncPage(): React.JSX.Element {
   useEffect(() => {
     window.api.settings.get().then((current) => {
       setSettings(current)
-      setHours(String(current.retentionHours))
+      setSyncFromDate(msToDateInput(current.syncFromMs))
       setPollMinutes(String(current.pollIntervalMinutes))
       setLoadRemoteImages(current.loadRemoteImages)
     })
   }, [])
 
-  const parsedHours = Number(hours)
   const parsedPoll = Number(pollMinutes)
-  const isHoursValid =
-    Number.isFinite(parsedHours) &&
-    parsedHours >= RETENTION_MIN_HOURS &&
-    parsedHours <= RETENTION_MAX_HOURS
+  const parsedSyncFromMs = useMemo(() => dateInputToMs(syncFromDate), [syncFromDate])
+  const todayMidnight = useMemo(() => todayMidnightMs(), [])
+  const isSyncFromValid =
+    Number.isFinite(parsedSyncFromMs) && parsedSyncFromMs >= 0 && parsedSyncFromMs <= todayMidnight
   const isPollValid =
     Number.isFinite(parsedPoll) && parsedPoll >= POLL_MIN_MINUTES && parsedPoll <= POLL_MAX_MINUTES
 
-  const hoursChanged = settings && Math.round(parsedHours) !== settings.retentionHours
+  const syncFromChanged = settings && parsedSyncFromMs !== settings.syncFromMs
   const pollChanged = settings && Math.round(parsedPoll) !== settings.pollIntervalMinutes
   const remoteImagesChanged = settings && loadRemoteImages !== settings.loadRemoteImages
   const canSave =
-    isHoursValid && isPollValid && (hoursChanged || pollChanged || remoteImagesChanged)
+    isSyncFromValid && isPollValid && (syncFromChanged || pollChanged || remoteImagesChanged)
 
   async function handleSave(): Promise<void> {
     if (!canSave || !settings) return
@@ -71,8 +89,8 @@ export function SettingsSyncPage(): React.JSX.Element {
     setSaveError(null)
     try {
       let next = settings
-      if (hoursChanged) {
-        next = await window.api.settings.setRetentionHours(Math.round(parsedHours))
+      if (syncFromChanged) {
+        next = await window.api.settings.setSyncFromMs(parsedSyncFromMs)
       }
       if (pollChanged) {
         next = await window.api.settings.setPollIntervalMinutes(Math.round(parsedPoll))
@@ -81,7 +99,7 @@ export function SettingsSyncPage(): React.JSX.Element {
         next = await window.api.settings.setLoadRemoteImages(loadRemoteImages)
       }
       setSettings(next)
-      setHours(String(next.retentionHours))
+      setSyncFromDate(msToDateInput(next.syncFromMs))
       setPollMinutes(String(next.pollIntervalMinutes))
       setLoadRemoteImages(next.loadRemoteImages)
       setSaveState('idle')
@@ -93,46 +111,35 @@ export function SettingsSyncPage(): React.JSX.Element {
     }
   }
 
+  const syncFromLabel = settings ? new Date(settings.syncFromMs).toLocaleDateString() : '…'
+
   return (
     <section className="space-y-8">
       <div>
         <h2 className="text-base font-semibold">Sync</h2>
         <p className="text-sm text-muted-foreground">
-          Mail Samurai keeps the last <strong>{settings?.retentionHours ?? '…'} hours</strong> of
-          your inbox cached locally and removes anything older. The sync runs every{' '}
+          Mail Samurai syncs and categorizes emails starting from <strong>{syncFromLabel}</strong>.
+          Anything in your inbox from that date on stays cached locally until it's archived upstream
+          — archived copies are removed after {ARCHIVE_RETENTION_DAYS} days. The sync runs every{' '}
           <strong>{settings?.pollIntervalMinutes ?? '…'} minutes</strong> in the background.
         </p>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="retention">Retention window (hours)</Label>
+        <Label htmlFor="syncFrom">Sync from</Label>
         <div className="flex items-center gap-2">
           <Input
-            id="retention"
-            name="retentionHours"
-            type="number"
-            min={RETENTION_MIN_HOURS}
-            max={RETENTION_MAX_HOURS}
-            value={hours}
-            onChange={(e) => setHours(e.target.value)}
-            className="w-32"
+            id="syncFrom"
+            name="syncFromDate"
+            type="date"
+            max={msToDateInput(todayMidnight)}
+            value={syncFromDate}
+            onChange={(e) => setSyncFromDate(e.target.value)}
+            className="w-44"
           />
           <span className="text-sm text-muted-foreground">
-            Between {RETENTION_MIN_HOURS} and {RETENTION_MAX_HOURS} hours.
+            Earliest date to sync. Older messages are ignored.
           </span>
-        </div>
-        <div className="flex flex-wrap gap-2 pt-1">
-          {RETENTION_PRESETS.map((p) => (
-            <Button
-              key={p.hours}
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setHours(String(p.hours))}
-            >
-              {p.label}
-            </Button>
-          ))}
         </div>
       </div>
 

@@ -119,6 +119,9 @@ export function buildSanitizedEmailDocument(
         line-height: 1.5;
         padding: 0 4px;
         word-break: break-word;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
       }
       img { max-width: 100%; height: auto; }
       a { color: #2563eb; }

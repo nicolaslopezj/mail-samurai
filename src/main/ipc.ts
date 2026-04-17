@@ -1,8 +1,17 @@
 import { ipcMain } from 'electron'
-import type { AccountDraft, AiProvider, Category, MessagesQuery } from '../shared/settings'
+import type {
+  AccountDraft,
+  AiProvider,
+  Category,
+  CategoryAction,
+  MessagesQuery,
+  SummaryLanguage,
+  ThemePreference
+} from '../shared/settings'
 import * as accounts from './accounts-store'
+import { categorizeMessage } from './ai-categorize'
 import { listModels } from './ai-models'
-import { setMessageSeen } from './imap-sync'
+import { archiveMessage, setMessageSeen, unarchiveMessage } from './imap-sync'
 import { testImapAuth } from './imap-test'
 import * as messages from './messages-store'
 import * as store from './settings-store'
@@ -26,10 +35,11 @@ export function registerIpcHandlers(): void {
     return listModels(provider, key)
   })
 
-  ipcMain.handle('settings:setRetentionHours', async (_event, hours: number) => {
-    const next = await store.setRetentionHours(hours)
-    // Apply the new retention immediately (also prunes anything now out of window).
-    triggerSync().catch((err) => console.error('[sync] post-retention sync failed:', err))
+  ipcMain.handle('settings:setSyncFromMs', async (_event, ms: number) => {
+    const next = await store.setSyncFromMs(ms)
+    // Apply the new sync window immediately: drops messages that fell out
+    // of scope and pulls anything newly in scope.
+    triggerSync().catch((err) => console.error('[sync] post-syncFrom sync failed:', err))
     return next
   })
 
@@ -43,8 +53,16 @@ export function registerIpcHandlers(): void {
     store.setLoadRemoteImages(enabled)
   )
 
-  ipcMain.handle('settings:setCategories', (_event, categories: Category[]) =>
-    store.setCategories(categories)
+  ipcMain.handle(
+    'settings:setCategories',
+    (_event, categories: Category[], uncategorizedAction: CategoryAction) =>
+      store.setCategories(categories, uncategorizedAction)
+  )
+
+  ipcMain.handle('settings:setTheme', (_event, theme: ThemePreference) => store.setTheme(theme))
+
+  ipcMain.handle('settings:setSummaryLanguage', (_event, language: SummaryLanguage) =>
+    store.setSummaryLanguage(language)
   )
 
   // Email accounts
@@ -75,6 +93,12 @@ export function registerIpcHandlers(): void {
   // Messages
   ipcMain.handle('messages:list', (_event, query: MessagesQuery) => messages.listMessages(query))
 
+  ipcMain.handle('messages:counts', async () => {
+    const settings = await store.getUiSettings()
+    const todoIds = settings.categories.filter((c) => c.action.kind === 'todo').map((c) => c.id)
+    return messages.getCounts(todoIds)
+  })
+
   ipcMain.handle('messages:get', (_event, accountId: string, uid: number) =>
     messages.getMessage(accountId, uid)
   )
@@ -82,8 +106,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'messages:setSeen',
     async (_event, accountId: string, uid: number, seen: boolean) => {
-      const changed = messages.setSeenLocal(accountId, uid, seen)
-      if (changed) notifyChanged(accountId)
+      messages.setSeenLocal(accountId, uid, seen)
+      notifyChanged(accountId)
       const list = await accounts.list()
       const account = list.find((a) => a.id === accountId)
       if (!account) return
@@ -93,6 +117,73 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  ipcMain.handle(
+    'messages:setCategory',
+    (_event, accountId: string, uid: number, categoryId: string | null) => {
+      messages.setCategory(accountId, uid, categoryId)
+      notifyChanged(accountId)
+    }
+  )
+
+  ipcMain.handle('messages:archive', async (_event, accountId: string, uid: number) => {
+    messages.setArchivedLocal(accountId, uid, Date.now())
+    notifyChanged(accountId)
+    const list = await accounts.list()
+    const account = list.find((a) => a.id === accountId)
+    if (!account) return
+    try {
+      await archiveMessage(account, uid)
+    } catch (err) {
+      console.error(`[imap] archive uid=${uid} failed:`, err)
+      throw err
+    }
+  })
+
+  ipcMain.handle('messages:unarchive', async (_event, accountId: string, uid: number) => {
+    const messageId = messages.getMessageId(accountId, uid)
+    if (!messageId) throw new Error('Message has no Message-Id; cannot unarchive.')
+    const list = await accounts.list()
+    const account = list.find((a) => a.id === accountId)
+    if (!account) throw new Error('Account not found.')
+    // IMAP first — a failure here leaves the local cache untouched. Only
+    // after the server-side move succeeds do we drop the stale row and
+    // trigger a sync so the message is refetched under its new INBOX UID.
+    await unarchiveMessage(account, messageId)
+    messages.deleteMessage(accountId, uid)
+    notifyChanged(accountId)
+    triggerSync(accountId).catch((err) =>
+      console.error('[sync] post-unarchive sync failed:', err)
+    )
+  })
+
   // Sync
   ipcMain.handle('sync:trigger', (_event, accountId?: string) => triggerSync(accountId))
+
+  // AI
+  ipcMain.handle('ai:categorize', async (_event, accountId: string, uid: number) => {
+    const settings = await store.getUiSettings()
+    if (!settings.aiProvider || !settings.aiModel) {
+      throw new Error('Pick an AI provider and model in Settings first.')
+    }
+    const apiKey = await store.getApiKey(settings.aiProvider)
+    if (!apiKey) {
+      throw new Error('No API key set for the configured AI provider.')
+    }
+    const message = messages.getMessage(accountId, uid)
+    if (!message) {
+      throw new Error('Message not found locally.')
+    }
+    const result = await categorizeMessage(
+      message,
+      settings.categories,
+      settings.aiProvider,
+      settings.aiModel,
+      apiKey,
+      settings.summaryLanguage
+    )
+    messages.setCategory(accountId, uid, result.categoryId)
+    messages.setAiSummary(accountId, uid, result.summary)
+    notifyChanged(accountId)
+    return result
+  })
 }

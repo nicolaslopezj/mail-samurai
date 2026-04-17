@@ -1,12 +1,12 @@
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
-import type { Account, EmailAddress } from '../shared/settings'
+import { type Account, ARCHIVE_RETENTION_MS, type EmailAddress } from '../shared/settings'
 import { getPassword } from './accounts-store'
 import {
   deleteAllForAccount,
-  deleteMissing,
   getSyncState,
   listLocalUids,
+  reconcileInbox,
   setSyncState,
   type UpsertInlineAttachment,
   type UpsertMessage,
@@ -18,7 +18,10 @@ export type SyncResult = {
   accountId: string
   added: number
   updated: number
-  pruned: number
+  /** Newly archived rows (messages removed from INBOX this pass). */
+  archived: number
+  /** Rows deleted (archived too long ago or older than `syncFromMs`). */
+  deleted: number
 }
 
 function makeClient(account: Account, password: string): ImapFlow {
@@ -93,12 +96,14 @@ function extractInlineAttachments(parsed: {
 
 /**
  * Sync the INBOX of one account into the local cache.
- * - Adds messages newer than `cutoff` that aren't cached yet
- * - Updates flags for cached messages still in scope
- * - Deletes cached messages that fell out of scope (deleted upstream OR older than cutoff)
+ * - Adds messages newer than `syncFromMs` that aren't cached yet
+ * - Updates flags for cached messages still in INBOX
+ * - Marks missing-from-INBOX messages as archived; deletes them once their
+ *   archive timestamp is older than `ARCHIVE_RETENTION_MS`
+ * - Deletes messages older than `syncFromMs` (out of scope)
  * - Resets local cache if UIDVALIDITY changed
  */
-export async function syncAccount(account: Account, retentionHours: number): Promise<SyncResult> {
+export async function syncAccount(account: Account, syncFromMs: number): Promise<SyncResult> {
   const password = await getPassword(account.id)
   if (!password) throw new Error(`No stored password for account ${account.email}`)
 
@@ -107,7 +112,8 @@ export async function syncAccount(account: Account, retentionHours: number): Pro
 
   let added = 0
   let updated = 0
-  let pruned = 0
+  let archivedCount = 0
+  let deletedCount = 0
 
   try {
     const mailbox = await client.mailboxOpen('INBOX')
@@ -119,12 +125,10 @@ export async function syncAccount(account: Account, retentionHours: number): Pro
       deleteAllForAccount(account.id)
     }
 
-    const cutoff = Date.now() - retentionHours * 3_600_000
-    const since = new Date(cutoff)
+    const since = new Date(syncFromMs)
 
     const serverUidsRaw = (await client.search({ since }, { uid: true })) || []
     const serverUids = serverUidsRaw.map((n) => Number(n))
-    const serverUidSet = new Set(serverUids)
 
     const localUids = new Set(listLocalUids(account.id, uidValidity))
 
@@ -215,8 +219,17 @@ export async function syncAccount(account: Account, retentionHours: number): Pro
       updated = updates.length
     }
 
-    // --- Prune stale rows -------------------------------------------------
-    pruned = deleteMissing(account.id, uidValidity, [...serverUidSet], cutoff)
+    // --- Reconcile archived / out-of-window rows --------------------------
+    const reconciled = reconcileInbox({
+      accountId: account.id,
+      uidValidity,
+      serverUids,
+      syncFromMs,
+      archiveRetentionMs: ARCHIVE_RETENTION_MS,
+      now: Date.now()
+    })
+    archivedCount = reconciled.archived
+    deletedCount = reconciled.deleted
 
     setSyncState(account.id, uidValidity, Date.now())
   } finally {
@@ -227,7 +240,13 @@ export async function syncAccount(account: Account, retentionHours: number): Pro
     }
   }
 
-  return { accountId: account.id, added, updated, pruned }
+  return {
+    accountId: account.id,
+    added,
+    updated,
+    archived: archivedCount,
+    deleted: deletedCount
+  }
 }
 
 /**
@@ -248,6 +267,164 @@ export async function setMessageSeen(account: Account, uid: number, seen: boolea
     } else {
       await client.messageFlagsRemove(String(uid), ['\\Seen'], { uid: true })
     }
+  } finally {
+    try {
+      await client.logout()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+type MailboxListEntry = {
+  path: string
+  specialUse?: string
+  flags?: Set<string> | string[]
+}
+
+/**
+ * Pick the archive destination for an IMAP account. Prefer a folder tagged
+ * with `\Archive` (RFC 6154). Fall back to Gmail's `\All` label and finally
+ * to common folder names — then bail if nothing plausible exists.
+ */
+function pickArchiveMailbox(list: MailboxListEntry[]): string | null {
+  const hasFlag = (m: MailboxListEntry, flag: string): boolean => {
+    if (m.specialUse === flag) return true
+    if (!m.flags) return false
+    if (Array.isArray(m.flags)) return m.flags.includes(flag)
+    return m.flags.has(flag)
+  }
+  const archive = list.find((m) => hasFlag(m, '\\Archive'))
+  if (archive) return archive.path
+  const all = list.find((m) => hasFlag(m, '\\All'))
+  if (all) return all.path
+  const byName = list.find((m) =>
+    ['Archive', 'Archives', '[Gmail]/All Mail'].includes(m.path)
+  )
+  return byName?.path ?? null
+}
+
+/**
+ * Move a message out of INBOX into the account's archive folder. The next
+ * sync will pick up the absence from INBOX and stamp `archived_at_ms`;
+ * callers should update the local cache optimistically for a snappy UI.
+ */
+export async function archiveMessage(account: Account, uid: number): Promise<void> {
+  const password = await getPassword(account.id)
+  if (!password) throw new Error(`No stored password for account ${account.email}`)
+
+  const client = makeClient(account, password)
+  await client.connect()
+  try {
+    const mailboxes = (await client.list()) as MailboxListEntry[]
+    const destination = pickArchiveMailbox(mailboxes)
+    if (!destination) {
+      throw new Error(`No archive folder found for ${account.email}`)
+    }
+    await client.mailboxOpen('INBOX')
+    await client.messageMove(String(uid), destination, { uid: true })
+  } finally {
+    try {
+      await client.logout()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Move an archived message back to INBOX. The local row's UID is no longer
+ * valid (it was the INBOX UID before the archive), so the caller should
+ * delete the local row after this resolves and let the next sync refetch
+ * the message under its fresh INBOX UID.
+ *
+ * `messageId` is the RFC 5322 header — we locate the message in the archive
+ * folder by searching that header, since UIDs differ per folder.
+ */
+export async function unarchiveMessage(account: Account, messageId: string): Promise<void> {
+  const password = await getPassword(account.id)
+  if (!password) throw new Error(`No stored password for account ${account.email}`)
+
+  // IMAP header search is typically a substring match, but servers differ
+  // on whether angle brackets are tolerated — strip them to be safe.
+  const bareId = messageId.replace(/[<>]/g, '').trim()
+  if (!bareId) throw new Error('Empty Message-Id; cannot locate in archive.')
+
+  const client = makeClient(account, password)
+  await client.connect()
+  try {
+    const mailboxes = (await client.list()) as MailboxListEntry[]
+    const hasFlag = (m: MailboxListEntry, flag: string): boolean => {
+      if (m.specialUse === flag) return true
+      if (!m.flags) return false
+      if (Array.isArray(m.flags)) return m.flags.includes(flag)
+      return m.flags.has(flag)
+    }
+    // Try the detected archive folder first, then fall back to any other
+    // non-system folder. iCloud and some hosts occasionally route moves to
+    // folders that don't carry the `\Archive` flag, so search broadly
+    // rather than giving up on the first miss.
+    const primary = pickArchiveMailbox(mailboxes)
+    const skipFlags = ['\\Inbox', '\\Sent', '\\Drafts', '\\Trash', '\\Junk']
+    const candidates = [
+      ...(primary ? [primary] : []),
+      ...mailboxes
+        .filter((m) => m.path !== primary && m.path !== 'INBOX')
+        .filter((m) => !skipFlags.some((f) => hasFlag(m, f)))
+        .map((m) => m.path)
+    ]
+    console.log(
+      `[unarchive] ${account.email} candidates:`,
+      candidates,
+      'looking for',
+      bareId
+    )
+    // Fetching envelope for a bounded number of recent messages in each
+    // candidate and matching Message-Id ourselves is a more forgiving probe
+    // than IMAP HEADER search — some servers (iCloud in particular) return
+    // empty results from HEADER queries even when the message is present.
+    for (const folder of candidates) {
+      let opened = false
+      try {
+        await client.mailboxOpen(folder)
+        opened = true
+      } catch (err) {
+        console.log(`[unarchive] cannot open ${folder}:`, err)
+        continue
+      }
+      if (!opened) continue
+      const hits = await client.search({ header: { 'message-id': bareId } }, { uid: true })
+      console.log(`[unarchive] ${folder} header-search hits:`, hits)
+      let archiveUid: number | null = null
+      if (hits && hits.length > 0) {
+        archiveUid = hits[hits.length - 1]
+      } else {
+        // Fallback: scan the most recent ~100 envelopes for a Message-Id
+        // match. Some servers (iCloud in particular) return empty HEADER
+        // search results even when the message is present.
+        const exists = (client.mailbox && (client.mailbox as { exists?: number }).exists) || 0
+        if (exists > 0) {
+          const start = Math.max(1, exists - 100)
+          for await (const msg of client.fetch(`${start}:${exists}`, {
+            uid: true,
+            envelope: true
+          })) {
+            const envId = msg.envelope?.messageId
+            if (!envId) continue
+            if (envId.replace(/[<>]/g, '').trim() === bareId) {
+              archiveUid = msg.uid
+              break
+            }
+          }
+        }
+        console.log(`[unarchive] ${folder} envelope-scan archiveUid:`, archiveUid)
+      }
+      if (archiveUid !== null) {
+        await client.messageMove(String(archiveUid), 'INBOX', { uid: true })
+        return
+      }
+    }
+    throw new Error(`Message not found in any archive folder for ${account.email}.`)
   } finally {
     try {
       await client.logout()

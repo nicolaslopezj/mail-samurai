@@ -6,9 +6,11 @@ files:
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md,CLAUDE.md}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md,CLAUDE.md,AGENTS.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!agent/**'
+  - '!.signing/**'
 asarUnpack:
   - resources/**
 mac:
@@ -16,22 +18,23 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSDocumentsFolderUsageDescription: Mail Samurai stores local email metadata in your Documents folder.
-  notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
-win:
-  executableName: mail-samurai
-nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
-linux:
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: true
   target:
-    - AppImage
-    - deb
-  maintainer: nicolaslopezj
-  category: Office
-appImage:
-  artifactName: ${name}-${version}.${ext}
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+dmg:
+  artifactName: ${name}-${version}-${arch}.${ext}
 npmRebuild: true
+publish:
+  provider: github
+  owner: nicolaslopezj
+  repo: mail-samurai
+  releaseType: release

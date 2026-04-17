@@ -2,6 +2,7 @@ import type {
   EmailAddress,
   InlineAttachment,
   Message,
+  MessageCounts,
   MessagesQuery,
   MessageWithBody
 } from '../shared/settings'
@@ -22,6 +23,10 @@ type MessageRow = {
   seen: number
   flagged: number
   snippet: string | null
+  category_id: string | null
+  ai_summary: string | null
+  categorized_at: number | null
+  archived_at_ms: number | null
 }
 
 type MessageRowWithBody = MessageRow & {
@@ -61,21 +66,142 @@ function rowToMessage(row: MessageRow): Message {
     flags: parseFlags(row.flags_json),
     seen: row.seen === 1,
     flagged: row.flagged === 1,
-    snippet: row.snippet
+    snippet: row.snippet,
+    categoryId: row.category_id,
+    aiSummary: row.ai_summary,
+    categorizedAt: row.categorized_at,
+    archivedAt: row.archived_at_ms
+  }
+}
+
+/**
+ * Counts used by the sidebar badges. "Inbox" counts unread messages the AI
+ * hasn't reviewed yet (the Inbox bucket actually shows). "Other" counts unread
+ * messages the AI reviewed but didn't match any category. "Todo" is the total
+ * number of messages (read or not) whose category has a `todo` action — it's
+ * a follow-up list, so read/unread doesn't matter.
+ */
+export function getCounts(todoCategoryIds: string[]): MessageCounts {
+  const db = getDb()
+  const inboxRows = db
+    .prepare(
+      `SELECT account_id, COUNT(*) AS n FROM messages
+       WHERE seen = 0 AND category_id IS NULL AND categorized_at IS NULL
+         AND archived_at_ms IS NULL
+       GROUP BY account_id`
+    )
+    .all() as { account_id: string; n: number }[]
+  const inboxUnread: Record<string, number> = {}
+  let inboxUnreadTotal = 0
+  for (const r of inboxRows) {
+    inboxUnread[r.account_id] = r.n
+    inboxUnreadTotal += r.n
+  }
+  const categoryRows = db
+    .prepare(
+      `SELECT category_id, COUNT(*) AS n FROM messages
+       WHERE seen = 0 AND category_id IS NOT NULL AND archived_at_ms IS NULL
+       GROUP BY category_id`
+    )
+    .all() as { category_id: string; n: number }[]
+  const categoryUnread: Record<string, number> = {}
+  for (const r of categoryRows) categoryUnread[r.category_id] = r.n
+  const otherRow = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM messages
+       WHERE seen = 0 AND category_id IS NULL AND categorized_at IS NOT NULL
+         AND archived_at_ms IS NULL`
+    )
+    .get() as { n: number }
+  const otherUnread = otherRow.n
+  let todoTotal = 0
+  if (todoCategoryIds.length > 0) {
+    const placeholders = todoCategoryIds.map(() => '?').join(',')
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM messages
+         WHERE category_id IN (${placeholders}) AND archived_at_ms IS NULL`
+      )
+      .get(...todoCategoryIds) as { n: number }
+    todoTotal = row.n
+  }
+  const archiveUnread: Record<string, number> = {}
+  let archiveUnreadTotal = 0
+  const archiveRows = db
+    .prepare(
+      `SELECT account_id, COUNT(*) AS n FROM messages
+       WHERE seen = 0 AND archived_at_ms IS NOT NULL
+       GROUP BY account_id`
+    )
+    .all() as { account_id: string; n: number }[]
+  for (const r of archiveRows) {
+    archiveUnread[r.account_id] = r.n
+    archiveUnreadTotal += r.n
+  }
+  return {
+    inboxUnread,
+    inboxUnreadTotal,
+    categoryUnread,
+    otherUnread,
+    todoTotal,
+    archiveUnread,
+    archiveUnreadTotal
   }
 }
 
 export function listMessages(query: MessagesQuery): Message[] {
   const db = getDb()
   const limit = Math.min(query.limit ?? 200, 1000)
-  const rows = query.accountId
-    ? (db
-        .prepare(`SELECT * FROM messages WHERE account_id = ? ORDER BY date_ms DESC LIMIT ?`)
-        .all(query.accountId, limit) as MessageRow[])
-    : (db
-        .prepare(`SELECT * FROM messages ORDER BY date_ms DESC LIMIT ?`)
-        .all(limit) as MessageRow[])
+  const where: string[] = []
+  const params: (string | number)[] = []
+  if (query.accountId) {
+    where.push('account_id = ?')
+    params.push(query.accountId)
+  }
+  if (query.categoryId) {
+    where.push('category_id = ?')
+    where.push('archived_at_ms IS NULL')
+    params.push(query.categoryId)
+  } else if (query.uncategorized) {
+    where.push('category_id IS NULL AND categorized_at IS NULL AND archived_at_ms IS NULL')
+  } else if (query.other) {
+    where.push('category_id IS NULL AND categorized_at IS NOT NULL AND archived_at_ms IS NULL')
+  } else if (query.archived) {
+    where.push('archived_at_ms IS NOT NULL')
+  }
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+  const rows = db
+    .prepare(`SELECT * FROM messages ${whereSql} ORDER BY date_ms DESC LIMIT ?`)
+    .all(...params, limit) as MessageRow[]
   return rows.map(rowToMessage)
+}
+
+/**
+ * Assign (or clear, when `categoryId` is null) the category for a message.
+ * Also stamps `categorized_at` so the UI can distinguish "never categorized"
+ * from an explicit "no matching category" (`category_id = NULL`) decision.
+ */
+export function setCategory(accountId: string, uid: number, categoryId: string | null): boolean {
+  const db = getDb()
+  const result = db
+    .prepare(
+      `UPDATE messages SET category_id = ?, categorized_at = ? WHERE account_id = ? AND uid = ?`
+    )
+    .run(categoryId, Date.now(), accountId, uid)
+  return result.changes > 0
+}
+
+/**
+ * Persist the AI-generated summary for a message. Empty strings are stored
+ * as NULL so the renderer can fall back to the built-in snippet.
+ */
+export function setAiSummary(accountId: string, uid: number, summary: string | null): boolean {
+  const db = getDb()
+  const value = summary && summary.trim() ? summary : null
+  const result = db
+    .prepare(`UPDATE messages SET ai_summary = ? WHERE account_id = ? AND uid = ?`)
+    .run(value, accountId, uid)
+  return result.changes > 0
 }
 
 export function getMessage(accountId: string, uid: number): MessageWithBody | null {
@@ -270,58 +396,128 @@ export function setSeenLocal(accountId: string, uid: number, seen: boolean): boo
   return true
 }
 
-export function deleteMissing(
-  accountId: string,
-  uidValidity: number,
-  keepUids: number[],
-  cutoffMs: number
-): number {
+/**
+ * Stamp `archived_at_ms` locally so the UI can move the message to the
+ * Archived view before the IMAP move completes. Returns true if the row
+ * existed and wasn't already archived.
+ */
+export function setArchivedLocal(accountId: string, uid: number, archivedAt: number): boolean {
   const db = getDb()
-  // SQLite has a parameter limit; chunk the keep set if necessary.
-  // For our retention windows this is generally well under the limit, but be safe.
+  const result = db
+    .prepare(
+      `UPDATE messages SET archived_at_ms = ?
+       WHERE account_id = ? AND uid = ? AND archived_at_ms IS NULL`
+    )
+    .run(archivedAt, accountId, uid)
+  return result.changes > 0
+}
+
+/** Return the RFC 5322 Message-Id of a cached message, if we have it. */
+export function getMessageId(accountId: string, uid: number): string | null {
+  const db = getDb()
+  const row = db
+    .prepare(
+      `SELECT message_id FROM messages
+       WHERE account_id = ? AND uid = ? ORDER BY uid_validity DESC LIMIT 1`
+    )
+    .get(accountId, uid) as { message_id: string | null } | undefined
+  return row?.message_id ?? null
+}
+
+/**
+ * Remove a single message row plus its inline attachments. Used after the
+ * IMAP move on unarchive — the row still holds the pre-move INBOX UID, which
+ * would otherwise get re-archived by `reconcileInbox` on the next pass.
+ */
+export function deleteMessage(accountId: string, uid: number): void {
+  const db = getDb()
+  db.transaction(() => {
+    db.prepare(`DELETE FROM inline_attachments WHERE account_id = ? AND uid = ?`).run(
+      accountId,
+      uid
+    )
+    db.prepare(`DELETE FROM messages WHERE account_id = ? AND uid = ?`).run(accountId, uid)
+  })()
+}
+
+export type ReconcileResult = {
+  /** Rows newly marked as archived on this pass. */
+  archived: number
+  /** Rows whose archived flag was cleared (reappeared in INBOX). */
+  unarchived: number
+  /** Rows deleted (archived too long ago, or older than `syncFromMs`). */
+  deleted: number
+}
+
+/**
+ * Reconcile local cache against the server's current INBOX listing.
+ *
+ * - Messages present in INBOX get `archived_at_ms` cleared (if set).
+ * - Messages no longer in INBOX (but still newer than `syncFromMs`) are
+ *   marked as archived with the current timestamp. Already-archived rows
+ *   keep their original stamp so we don't restart the countdown.
+ * - Rows whose `archived_at_ms < now - archiveRetentionMs` are deleted.
+ * - Rows whose `date_ms < syncFromMs` are always deleted (out of scope).
+ */
+export function reconcileInbox(params: {
+  accountId: string
+  uidValidity: number
+  serverUids: number[]
+  syncFromMs: number
+  archiveRetentionMs: number
+  now: number
+}): ReconcileResult {
+  const { accountId, uidValidity, serverUids, syncFromMs, archiveRetentionMs, now } = params
+  const db = getDb()
+  const archiveCutoff = now - archiveRetentionMs
   const tx = db.transaction(() => {
-    let removed = 0
-    if (keepUids.length === 0) {
-      db.prepare(`DELETE FROM inline_attachments WHERE account_id = ? AND uid_validity = ?`).run(
-        accountId,
-        uidValidity
-      )
-      const result = db
-        .prepare(`DELETE FROM messages WHERE account_id = ? AND uid_validity = ?`)
-        .run(accountId, uidValidity)
-      removed += result.changes
-    } else {
-      // Insert keepUids into a temp table and DELETE WHERE NOT IN.
-      db.exec('CREATE TEMP TABLE IF NOT EXISTS _keep_uids (uid INTEGER PRIMARY KEY)')
-      db.exec('DELETE FROM _keep_uids')
-      const ins = db.prepare('INSERT OR IGNORE INTO _keep_uids (uid) VALUES (?)')
-      for (const uid of keepUids) ins.run(uid)
-      db.prepare(
-        `DELETE FROM inline_attachments
-         WHERE account_id = ? AND uid_validity = ?
-           AND uid NOT IN (SELECT uid FROM _keep_uids)`
-      ).run(accountId, uidValidity)
-      const result = db
-        .prepare(
-          `DELETE FROM messages
-           WHERE account_id = ? AND uid_validity = ?
-             AND uid NOT IN (SELECT uid FROM _keep_uids)`
-        )
-        .run(accountId, uidValidity)
-      removed += result.changes
-      db.exec('DELETE FROM _keep_uids')
+    db.exec('CREATE TEMP TABLE IF NOT EXISTS _server_uids (uid INTEGER PRIMARY KEY)')
+    db.exec('DELETE FROM _server_uids')
+    if (serverUids.length > 0) {
+      const ins = db.prepare('INSERT OR IGNORE INTO _server_uids (uid) VALUES (?)')
+      for (const uid of serverUids) ins.run(uid)
     }
+
+    const unarchived = db
+      .prepare(
+        `UPDATE messages
+         SET archived_at_ms = NULL
+         WHERE account_id = ? AND uid_validity = ?
+           AND archived_at_ms IS NOT NULL
+           AND uid IN (SELECT uid FROM _server_uids)`
+      )
+      .run(accountId, uidValidity).changes
+
+    const archived = db
+      .prepare(
+        `UPDATE messages
+         SET archived_at_ms = ?
+         WHERE account_id = ? AND uid_validity = ?
+           AND archived_at_ms IS NULL
+           AND date_ms >= ?
+           AND uid NOT IN (SELECT uid FROM _server_uids)`
+      )
+      .run(now, accountId, uidValidity, syncFromMs).changes
+
     db.prepare(
       `DELETE FROM inline_attachments
        WHERE account_id = ? AND uid_validity = ?
-         AND uid IN (SELECT uid FROM messages
-                     WHERE account_id = ? AND uid_validity = ? AND date_ms < ?)`
-    ).run(accountId, uidValidity, accountId, uidValidity, cutoffMs)
-    const oldResult = db
-      .prepare(`DELETE FROM messages WHERE account_id = ? AND uid_validity = ? AND date_ms < ?`)
-      .run(accountId, uidValidity, cutoffMs)
-    removed += oldResult.changes
-    return removed
+         AND uid IN (
+           SELECT uid FROM messages
+           WHERE account_id = ? AND uid_validity = ?
+             AND ((archived_at_ms IS NOT NULL AND archived_at_ms < ?) OR date_ms < ?)
+         )`
+    ).run(accountId, uidValidity, accountId, uidValidity, archiveCutoff, syncFromMs)
+    const deleted = db
+      .prepare(
+        `DELETE FROM messages
+         WHERE account_id = ? AND uid_validity = ?
+           AND ((archived_at_ms IS NOT NULL AND archived_at_ms < ?) OR date_ms < ?)`
+      )
+      .run(accountId, uidValidity, archiveCutoff, syncFromMs).changes
+
+    db.exec('DELETE FROM _server_uids')
+    return { archived, unarchived, deleted }
   })
   return tx()
 }
@@ -333,14 +529,28 @@ export function deleteAllForAccount(accountId: string): void {
   db.prepare(`DELETE FROM account_sync_state WHERE account_id = ?`).run(accountId)
 }
 
-export function pruneOlderThan(cutoffMs: number): number {
+/**
+ * Global pre-sync cleanup. Removes messages that fell out of the sync window
+ * (older than `syncFromMs`) and archived copies whose retention has expired.
+ * Run across all accounts, independent of any ongoing IMAP fetch.
+ */
+export function prunePermanent(syncFromMs: number, archiveRetentionMs: number): number {
   const db = getDb()
+  const archiveCutoff = Date.now() - archiveRetentionMs
   db.prepare(
     `DELETE FROM inline_attachments
      WHERE (account_id, uid_validity, uid) IN
-       (SELECT account_id, uid_validity, uid FROM messages WHERE date_ms < ?)`
-  ).run(cutoffMs)
-  const result = db.prepare(`DELETE FROM messages WHERE date_ms < ?`).run(cutoffMs)
+       (SELECT account_id, uid_validity, uid FROM messages
+        WHERE date_ms < ?
+           OR (archived_at_ms IS NOT NULL AND archived_at_ms < ?))`
+  ).run(syncFromMs, archiveCutoff)
+  const result = db
+    .prepare(
+      `DELETE FROM messages
+       WHERE date_ms < ?
+          OR (archived_at_ms IS NOT NULL AND archived_at_ms < ?)`
+    )
+    .run(syncFromMs, archiveCutoff)
   return result.changes
 }
 

@@ -1,5 +1,5 @@
 import type { ElectronAPI } from '@electron-toolkit/preload'
-import type { AccountsApi, MessagesApi, SettingsApi, SyncApi } from '../shared/settings'
+import type { AccountsApi, AiApi, MessagesApi, SettingsApi, SyncApi } from '../shared/settings'
 
 declare global {
   interface Window {
@@ -9,6 +9,7 @@ declare global {
       accounts: AccountsApi
       messages: MessagesApi
       sync: SyncApi
+      ai: AiApi
     }
   }
 }

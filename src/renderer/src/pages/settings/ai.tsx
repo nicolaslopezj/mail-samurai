@@ -1,4 +1,11 @@
-import { AI_PROVIDERS, type AiModel, type AiProvider, type UiSettings } from '@shared/settings'
+import {
+  AI_PROVIDERS,
+  type AiModel,
+  type AiProvider,
+  SUMMARY_LANGUAGES,
+  type SummaryLanguage,
+  type UiSettings
+} from '@shared/settings'
 import { CheckIcon, Loader2Icon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -86,6 +93,18 @@ export function SettingsAiPage(): React.JSX.Element {
     } catch (err) {
       setSaveError(ipcErrorMessage(err))
       setSaveState('error')
+    }
+  }
+
+  async function handleSummaryLanguageChange(value: SummaryLanguage): Promise<void> {
+    // Save inline — picking a language is a single-field change, no Save button
+    // needed. Optimistically update local state so the dropdown feels instant.
+    setSettings((prev) => (prev ? { ...prev, summaryLanguage: value } : prev))
+    try {
+      const next = await window.api.settings.setSummaryLanguage(value)
+      setSettings(next)
+    } catch (err) {
+      setSaveError(ipcErrorMessage(err))
     }
   }
 
@@ -183,6 +202,33 @@ export function SettingsAiPage(): React.JSX.Element {
           </span>
         )}
         {saveError && <span className="text-xs text-destructive">{saveError}</span>}
+      </div>
+
+      <div className="space-y-2 border-t pt-6">
+        <div>
+          <h3 className="text-sm font-semibold">Summary language</h3>
+          <p className="text-sm text-muted-foreground">
+            Language used for the two-line summary shown in the message list. Pick one to force
+            every summary into that language, or leave it on auto to match the email's original
+            language.
+          </p>
+        </div>
+        <Select
+          value={settings?.summaryLanguage ?? 'auto'}
+          onValueChange={(v) => handleSummaryLanguageChange(v as SummaryLanguage)}
+          disabled={!settings}
+        >
+          <SelectTrigger id="summaryLanguage" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SUMMARY_LANGUAGES.map((l) => (
+              <SelectItem key={l.value} value={l.value}>
+                {l.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
     </section>
   )
