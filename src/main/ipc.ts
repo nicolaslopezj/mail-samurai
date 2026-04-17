@@ -1,11 +1,12 @@
 import { ipcMain } from 'electron'
-import type { AccountDraft, AiProvider, MessagesQuery } from '../shared/settings'
+import type { AccountDraft, AiProvider, Category, MessagesQuery } from '../shared/settings'
 import * as accounts from './accounts-store'
 import { listModels } from './ai-models'
+import { setMessageSeen } from './imap-sync'
 import { testImapAuth } from './imap-test'
 import * as messages from './messages-store'
 import * as store from './settings-store'
-import { reloadInterval, triggerSync } from './sync-scheduler'
+import { notifyChanged, reloadInterval, triggerSync } from './sync-scheduler'
 
 export function registerIpcHandlers(): void {
   // AI / general settings
@@ -42,6 +43,10 @@ export function registerIpcHandlers(): void {
     store.setLoadRemoteImages(enabled)
   )
 
+  ipcMain.handle('settings:setCategories', (_event, categories: Category[]) =>
+    store.setCategories(categories)
+  )
+
   // Email accounts
   ipcMain.handle('accounts:list', () => accounts.list())
 
@@ -65,15 +70,27 @@ export function registerIpcHandlers(): void {
     accounts.setLabel(id, label)
   )
 
-  ipcMain.handle('accounts:reorder', (_event, orderedIds: string[]) =>
-    accounts.reorder(orderedIds)
-  )
+  ipcMain.handle('accounts:reorder', (_event, orderedIds: string[]) => accounts.reorder(orderedIds))
 
   // Messages
   ipcMain.handle('messages:list', (_event, query: MessagesQuery) => messages.listMessages(query))
 
   ipcMain.handle('messages:get', (_event, accountId: string, uid: number) =>
     messages.getMessage(accountId, uid)
+  )
+
+  ipcMain.handle(
+    'messages:setSeen',
+    async (_event, accountId: string, uid: number, seen: boolean) => {
+      const changed = messages.setSeenLocal(accountId, uid, seen)
+      if (changed) notifyChanged(accountId)
+      const list = await accounts.list()
+      const account = list.find((a) => a.id === accountId)
+      if (!account) return
+      setMessageSeen(account, uid, seen).catch((err) =>
+        console.error(`[imap] setSeen uid=${uid} failed:`, err)
+      )
+    }
   )
 
   // Sync

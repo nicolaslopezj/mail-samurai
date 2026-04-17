@@ -239,6 +239,37 @@ export function updateFlags(
   tx(updates)
 }
 
+/**
+ * Flip the `\Seen` flag locally for a single message, returning true if the
+ * row existed and the value actually changed. Used for optimistic UI updates
+ * — the IMAP round-trip happens in parallel and is reconciled on next sync.
+ */
+export function setSeenLocal(accountId: string, uid: number, seen: boolean): boolean {
+  const db = getDb()
+  const row = db
+    .prepare(
+      `SELECT uid_validity, flags_json, seen FROM messages
+       WHERE account_id = ? AND uid = ? ORDER BY uid_validity DESC LIMIT 1`
+    )
+    .get(accountId, uid) as { uid_validity: number; flags_json: string; seen: number } | undefined
+  if (!row) return false
+  if ((row.seen === 1) === seen) return false
+
+  const flags = parseFlags(row.flags_json)
+  const hasSeen = flags.includes('\\Seen')
+  const nextFlags = seen
+    ? hasSeen
+      ? flags
+      : [...flags, '\\Seen']
+    : flags.filter((f) => f !== '\\Seen')
+
+  db.prepare(
+    `UPDATE messages SET flags_json = ?, seen = ?
+     WHERE account_id = ? AND uid_validity = ? AND uid = ?`
+  ).run(JSON.stringify(nextFlags), seen ? 1 : 0, accountId, row.uid_validity, uid)
+  return true
+}
+
 export function deleteMissing(
   accountId: string,
   uidValidity: number,

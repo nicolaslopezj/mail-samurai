@@ -10,7 +10,7 @@ const inFlight = new Map<string, Promise<void>>()
 let timer: NodeJS.Timeout | null = null
 let currentIntervalMs: number | null = null
 
-function notifyChanged(accountId?: string): void {
+export function notifyChanged(accountId?: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('messages:changed', { accountId })
   }

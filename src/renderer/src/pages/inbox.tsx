@@ -46,6 +46,8 @@ export function InboxPage({ accountScoped = false }: Props): React.JSX.Element {
   const [selected, setSelected] = useState<{ accountId: string; uid: number } | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const isMountedRef = useRef(true)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const itemRefs = useRef(new Map<string, HTMLButtonElement>())
 
   useEffect(() => {
     isMountedRef.current = true
@@ -90,6 +92,10 @@ export function InboxPage({ accountScoped = false }: Props): React.JSX.Element {
   const headerTitle = accountId
     ? `${currentAccount ? accountDisplayName(currentAccount) : 'Inbox'} · Inbox`
     : 'All Inboxes'
+  const selectedIndex = useMemo(() => {
+    if (!messages || !selected) return -1
+    return messages.findIndex((m) => m.accountId === selected.accountId && m.uid === selected.uid)
+  }, [messages, selected])
 
   async function handleRefresh(): Promise<void> {
     setRefreshing(true)
@@ -100,6 +106,55 @@ export function InboxPage({ accountScoped = false }: Props): React.JSX.Element {
       if (isMountedRef.current) setRefreshing(false)
     }
   }
+
+  const selectMessageAtIndex = useCallback(
+    (index: number) => {
+      if (!messages || messages.length === 0) return
+      const nextMessage = messages[index]
+      if (!nextMessage) return
+      setSelected({ accountId: nextMessage.accountId, uid: nextMessage.uid })
+    },
+    [messages]
+  )
+
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!messages || messages.length === 0) return
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        const nextIndex = selectedIndex < 0 ? 0 : Math.min(selectedIndex + 1, messages.length - 1)
+        selectMessageAtIndex(nextIndex)
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        const nextIndex = selectedIndex < 0 ? messages.length - 1 : Math.max(selectedIndex - 1, 0)
+        selectMessageAtIndex(nextIndex)
+        return
+      }
+
+      if (event.key === 'Home') {
+        event.preventDefault()
+        selectMessageAtIndex(0)
+        return
+      }
+
+      if (event.key === 'End') {
+        event.preventDefault()
+        selectMessageAtIndex(messages.length - 1)
+      }
+    },
+    [messages, selectMessageAtIndex, selectedIndex]
+  )
+
+  useEffect(() => {
+    if (!messages || messages.length === 0 || selectedIndex < 0) return
+    const selectedMessage = messages[selectedIndex]
+    const selectedKey = `${selectedMessage.accountId}:${selectedMessage.uidValidity}:${selectedMessage.uid}`
+    itemRefs.current.get(selectedKey)?.scrollIntoView({ block: 'nearest' })
+  }, [messages, selectedIndex])
 
   return (
     <ResizablePanelGroup orientation="horizontal" className="h-full">
@@ -121,7 +176,19 @@ export function InboxPage({ accountScoped = false }: Props): React.JSX.Element {
               )}
             </button>
           </div>
-          <div className="flex-1 overflow-auto">
+          <div
+            ref={listRef}
+            className="flex-1 overflow-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            tabIndex={0}
+            role="listbox"
+            aria-label="Messages"
+            aria-activedescendant={
+              selectedIndex >= 0 && messages
+                ? `message-${messages[selectedIndex].accountId}-${messages[selectedIndex].uidValidity}-${messages[selectedIndex].uid}`
+                : undefined
+            }
+            onKeyDown={handleListKeyDown}
+          >
             {messages === null ? (
               <div className="px-4 py-6 text-sm text-muted-foreground">Loading…</div>
             ) : messages.length === 0 ? (
@@ -133,21 +200,45 @@ export function InboxPage({ accountScoped = false }: Props): React.JSX.Element {
                 {messages.map((m) => {
                   const isSelected = selected?.accountId === m.accountId && selected.uid === m.uid
                   const account = accountById.get(m.accountId)
+                  const unread = !m.seen
+                  const itemKey = `${m.accountId}:${m.uidValidity}:${m.uid}`
                   return (
-                    <li key={`${m.accountId}:${m.uidValidity}:${m.uid}`}>
+                    <li key={itemKey}>
                       <button
+                        id={`message-${m.accountId}-${m.uidValidity}-${m.uid}`}
+                        ref={(node) => {
+                          if (node) {
+                            itemRefs.current.set(itemKey, node)
+                            return
+                          }
+                          itemRefs.current.delete(itemKey)
+                        }}
                         type="button"
-                        onClick={() => setSelected({ accountId: m.accountId, uid: m.uid })}
+                        role="option"
+                        aria-selected={isSelected}
+                        onClick={() => {
+                          setSelected({ accountId: m.accountId, uid: m.uid })
+                          listRef.current?.focus()
+                        }}
                         className={cn(
-                          'flex w-full flex-col items-start gap-1 px-4 py-3 text-left transition-colors hover:bg-muted/60',
+                          'relative flex w-full flex-col items-start gap-1 py-3 pr-4 pl-6 text-left transition-colors hover:bg-muted/60 focus:outline-none',
                           isSelected && 'bg-muted'
                         )}
                       >
+                        {unread && (
+                          <>
+                            <span
+                              aria-hidden="true"
+                              className="absolute top-[18px] left-2 size-2 rounded-full bg-sky-500"
+                            />
+                            <span className="sr-only">Unread</span>
+                          </>
+                        )}
                         <div className="flex w-full items-baseline justify-between gap-2">
                           <span
                             className={cn(
                               'truncate text-sm',
-                              !m.seen ? 'font-semibold' : 'font-medium'
+                              unread ? 'font-semibold' : 'font-medium'
                             )}
                           >
                             {senderLabel(m)}
@@ -156,7 +247,7 @@ export function InboxPage({ accountScoped = false }: Props): React.JSX.Element {
                             {formatDate(m.date)}
                           </span>
                         </div>
-                        <div className="line-clamp-1 w-full text-sm">
+                        <div className={cn('line-clamp-1 w-full text-sm', unread && 'font-medium')}>
                           {m.subject || '(no subject)'}
                         </div>
                         {m.snippet && (
@@ -221,6 +312,11 @@ function MessageReader({
         if (cancelled) return
         setMessage(m)
         setLoading(false)
+        if (m && !m.seen) {
+          window.api.messages
+            .setSeen(m.accountId, m.uid, true)
+            .catch((err) => console.error('setSeen failed:', err))
+        }
       })
       .catch(() => {
         if (cancelled) return

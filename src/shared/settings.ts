@@ -20,6 +20,51 @@ export const POLL_MAX_MINUTES = 1440
 
 export const LOAD_REMOTE_IMAGES_DEFAULT = true
 
+/**
+ * What should happen to a message that lands in a category. Discriminated by
+ * `kind`; some kinds carry an extra user-provided parameter (folder / command).
+ */
+export type CategoryAction =
+  | { kind: 'none' }
+  | { kind: 'markRead' }
+  | { kind: 'todo' }
+  | { kind: 'archive' }
+  | { kind: 'delete' }
+  | { kind: 'moveToFolder'; folder: string }
+  | { kind: 'runCommand'; command: string }
+
+export type CategoryActionKind = CategoryAction['kind']
+
+export const CATEGORY_ACTIONS: { value: CategoryActionKind; label: string; hint: string }[] = [
+  { value: 'none', label: 'Do nothing', hint: 'Leave the message untouched in the inbox.' },
+  { value: 'markRead', label: 'Mark as read', hint: 'Clear the unread flag.' },
+  {
+    value: 'todo',
+    label: 'Add to To-Do',
+    hint: 'Flag it for an internal list of messages that need attention.'
+  },
+  { value: 'archive', label: 'Archive', hint: 'Move the message out of the inbox.' },
+  { value: 'delete', label: 'Delete', hint: 'Move the message to Trash.' },
+  { value: 'moveToFolder', label: 'Move to folder…', hint: 'Move into an IMAP folder you name.' },
+  {
+    value: 'runCommand',
+    label: 'Run a command…',
+    hint: 'Run a shell command on your machine. The message is also left as-is.'
+  }
+]
+
+/**
+ * A user-defined bucket for incoming mail. The AI decides whether a message
+ * belongs in this category by reading `instructions` as a natural-language
+ * rule (e.g. "receipts from online purchases", "newsletters I signed up for").
+ */
+export type Category = {
+  id: string
+  name: string
+  instructions: string
+  action: CategoryAction
+}
+
 export type UiSettings = {
   aiProvider: AiProvider | null
   aiModel: string | null
@@ -34,6 +79,7 @@ export type UiSettings = {
    * we default to ON for usability but expose a setting to turn it off.
    */
   loadRemoteImages: boolean
+  categories: Category[]
 }
 
 export type SettingsApi = {
@@ -44,6 +90,7 @@ export type SettingsApi = {
   setRetentionHours: (hours: number) => Promise<UiSettings>
   setPollIntervalMinutes: (minutes: number) => Promise<UiSettings>
   setLoadRemoteImages: (enabled: boolean) => Promise<UiSettings>
+  setCategories: (categories: Category[]) => Promise<UiSettings>
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +220,8 @@ export type MessagesQuery = {
 export type MessagesApi = {
   list: (query: MessagesQuery) => Promise<Message[]>
   get: (accountId: string, uid: number) => Promise<MessageWithBody | null>
+  /** Flip the \Seen flag; updates local cache optimistically and pushes to IMAP. */
+  setSeen: (accountId: string, uid: number, seen: boolean) => Promise<void>
   onChanged: (handler: () => void) => () => void
 }
 

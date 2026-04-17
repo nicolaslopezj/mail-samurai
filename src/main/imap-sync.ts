@@ -229,3 +229,30 @@ export async function syncAccount(account: Account, retentionHours: number): Pro
 
   return { accountId: account.id, added, updated, pruned }
 }
+
+/**
+ * Toggle the `\Seen` flag for a single message on the IMAP server.
+ * Fire-and-forget from the caller's perspective; the local cache is updated
+ * optimistically elsewhere so the UI doesn't wait on the network.
+ */
+export async function setMessageSeen(account: Account, uid: number, seen: boolean): Promise<void> {
+  const password = await getPassword(account.id)
+  if (!password) throw new Error(`No stored password for account ${account.email}`)
+
+  const client = makeClient(account, password)
+  await client.connect()
+  try {
+    await client.mailboxOpen('INBOX')
+    if (seen) {
+      await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true })
+    } else {
+      await client.messageFlagsRemove(String(uid), ['\\Seen'], { uid: true })
+    }
+  } finally {
+    try {
+      await client.logout()
+    } catch {
+      // ignore
+    }
+  }
+}

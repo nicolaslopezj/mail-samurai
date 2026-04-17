@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import {
   type AiProvider,
+  type Category,
+  type CategoryAction,
   LOAD_REMOTE_IMAGES_DEFAULT,
   POLL_DEFAULT_MINUTES,
   POLL_MAX_MINUTES,
@@ -21,6 +23,7 @@ type PersistedSettings = {
   retentionHours: number
   pollIntervalMinutes: number
   loadRemoteImages: boolean
+  categories: Category[]
 }
 
 const DEFAULT_SETTINGS: PersistedSettings = {
@@ -29,7 +32,8 @@ const DEFAULT_SETTINGS: PersistedSettings = {
   encryptedKeys: {},
   retentionHours: RETENTION_DEFAULT_HOURS,
   pollIntervalMinutes: POLL_DEFAULT_MINUTES,
-  loadRemoteImages: LOAD_REMOTE_IMAGES_DEFAULT
+  loadRemoteImages: LOAD_REMOTE_IMAGES_DEFAULT,
+  categories: []
 }
 
 function settingsPath(): string {
@@ -54,6 +58,48 @@ function clampPollInterval(value: unknown): number {
   return rounded
 }
 
+function sanitizeAction(value: unknown): CategoryAction {
+  if (!value || typeof value !== 'object') return { kind: 'none' }
+  const raw = value as { kind?: unknown; folder?: unknown; command?: unknown }
+  switch (raw.kind) {
+    case 'markRead':
+    case 'todo':
+    case 'archive':
+    case 'delete':
+    case 'none':
+      return { kind: raw.kind }
+    case 'moveToFolder': {
+      const folder = typeof raw.folder === 'string' ? raw.folder.trim() : ''
+      if (!folder) return { kind: 'none' }
+      return { kind: 'moveToFolder', folder }
+    }
+    case 'runCommand': {
+      const command = typeof raw.command === 'string' ? raw.command.trim() : ''
+      if (!command) return { kind: 'none' }
+      return { kind: 'runCommand', command }
+    }
+    default:
+      return { kind: 'none' }
+  }
+}
+
+function sanitizeCategories(value: unknown): Category[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: Category[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const raw = entry as Partial<Category>
+    const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : null
+    const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+    const instructions = typeof raw.instructions === 'string' ? raw.instructions.trim() : ''
+    if (!id || !name || seen.has(id)) continue
+    seen.add(id)
+    result.push({ id, name, instructions, action: sanitizeAction(raw.action) })
+  }
+  return result
+}
+
 async function read(): Promise<PersistedSettings> {
   try {
     const raw = await readFile(settingsPath(), 'utf8')
@@ -63,13 +109,12 @@ async function read(): Promise<PersistedSettings> {
       aiModel: parsed.aiModel ?? null,
       encryptedKeys: parsed.encryptedKeys ?? {},
       retentionHours: clampRetention(parsed.retentionHours ?? RETENTION_DEFAULT_HOURS),
-      pollIntervalMinutes: clampPollInterval(
-        parsed.pollIntervalMinutes ?? POLL_DEFAULT_MINUTES
-      ),
+      pollIntervalMinutes: clampPollInterval(parsed.pollIntervalMinutes ?? POLL_DEFAULT_MINUTES),
       loadRemoteImages:
         typeof parsed.loadRemoteImages === 'boolean'
           ? parsed.loadRemoteImages
-          : LOAD_REMOTE_IMAGES_DEFAULT
+          : LOAD_REMOTE_IMAGES_DEFAULT,
+      categories: sanitizeCategories(parsed.categories)
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_SETTINGS }
@@ -91,7 +136,8 @@ function toUi(settings: PersistedSettings): UiSettings {
     },
     retentionHours: settings.retentionHours,
     pollIntervalMinutes: settings.pollIntervalMinutes,
-    loadRemoteImages: settings.loadRemoteImages
+    loadRemoteImages: settings.loadRemoteImages,
+    categories: settings.categories
   }
 }
 
@@ -158,6 +204,13 @@ export async function getPollIntervalMinutes(): Promise<number> {
 export async function setLoadRemoteImages(enabled: boolean): Promise<UiSettings> {
   const current = await read()
   const next: PersistedSettings = { ...current, loadRemoteImages: Boolean(enabled) }
+  await write(next)
+  return toUi(next)
+}
+
+export async function setCategories(categories: Category[]): Promise<UiSettings> {
+  const current = await read()
+  const next: PersistedSettings = { ...current, categories: sanitizeCategories(categories) }
   await write(next)
   return toUi(next)
 }

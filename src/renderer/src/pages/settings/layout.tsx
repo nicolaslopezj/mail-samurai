@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, MailIcon, RefreshCwIcon, SparklesIcon } from 'lucide-react'
+import { ArrowLeftIcon, MailIcon, RefreshCwIcon, SparklesIcon, TagsIcon } from 'lucide-react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { to: '/settings/ai', label: 'AI provider', icon: SparklesIcon },
   { to: '/settings/accounts', label: 'Accounts', icon: MailIcon },
+  { to: '/settings/categories', label: 'Categories', icon: TagsIcon },
   { to: '/settings/sync', label: 'Sync', icon: RefreshCwIcon }
 ]
 

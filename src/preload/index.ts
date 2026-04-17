@@ -6,6 +6,7 @@ import type {
   AccountsApi,
   AiModel,
   AiProvider,
+  Category,
   Message,
   MessagesApi,
   MessagesQuery,
@@ -28,7 +29,9 @@ const settings: SettingsApi = {
   setPollIntervalMinutes: (minutes: number) =>
     ipcRenderer.invoke('settings:setPollIntervalMinutes', minutes) as Promise<UiSettings>,
   setLoadRemoteImages: (enabled: boolean) =>
-    ipcRenderer.invoke('settings:setLoadRemoteImages', enabled) as Promise<UiSettings>
+    ipcRenderer.invoke('settings:setLoadRemoteImages', enabled) as Promise<UiSettings>,
+  setCategories: (categories: Category[]) =>
+    ipcRenderer.invoke('settings:setCategories', categories) as Promise<UiSettings>
 }
 
 const accounts: AccountsApi = {
@@ -46,6 +49,8 @@ const messages: MessagesApi = {
   list: (query: MessagesQuery) => ipcRenderer.invoke('messages:list', query) as Promise<Message[]>,
   get: (accountId: string, uid: number) =>
     ipcRenderer.invoke('messages:get', accountId, uid) as Promise<MessageWithBody | null>,
+  setSeen: (accountId: string, uid: number, seen: boolean) =>
+    ipcRenderer.invoke('messages:setSeen', accountId, uid, seen) as Promise<void>,
   onChanged: (handler: () => void) => {
     const listener = (): void => handler()
     ipcRenderer.on('messages:changed', listener)

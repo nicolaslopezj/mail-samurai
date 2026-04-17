@@ -57,9 +57,7 @@ export function SettingsSyncPage(): React.JSX.Element {
     parsedHours >= RETENTION_MIN_HOURS &&
     parsedHours <= RETENTION_MAX_HOURS
   const isPollValid =
-    Number.isFinite(parsedPoll) &&
-    parsedPoll >= POLL_MIN_MINUTES &&
-    parsedPoll <= POLL_MAX_MINUTES
+    Number.isFinite(parsedPoll) && parsedPoll >= POLL_MIN_MINUTES && parsedPoll <= POLL_MAX_MINUTES
 
   const hoursChanged = settings && Math.round(parsedHours) !== settings.retentionHours
   const pollChanged = settings && Math.round(parsedPoll) !== settings.pollIntervalMinutes
