@@ -22,7 +22,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-
+import { ComposeDialog, type ComposeMode } from '@/components/compose-dialog'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import {
   Select,
@@ -32,7 +32,6 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { ComposeDialog, type ComposeMode } from '@/components/compose-dialog'
 import { categoryIconComponent } from '@/lib/category-icon'
 import { buildSanitizedEmailDocument } from '@/lib/sanitize-email'
 import { useTheme } from '@/lib/theme'
@@ -322,9 +321,7 @@ export function InboxPage({
       const target = event.target as HTMLElement | null
       if (
         target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       ) {
         return
       }
@@ -535,9 +532,7 @@ export function InboxPage({
                         )}
                         <MessageMeta
                           message={m}
-                          category={
-                            m.categoryId ? (categoryById.get(m.categoryId) ?? null) : null
-                          }
+                          category={m.categoryId ? (categoryById.get(m.categoryId) ?? null) : null}
                           account={!accountId ? (account ?? null) : null}
                         />
                       </button>
@@ -634,7 +629,6 @@ function ToolbarButton({
   )
 }
 
-
 function MessageToolbar({
   message,
   onToggleSeen,
@@ -691,13 +685,13 @@ function MessageToolbar({
       <ToolbarButton label="Reply" onClick={onReply}>
         <CornerUpLeftIcon className="size-4" />
       </ToolbarButton>
-      <ToolbarButton label="Reply All" onClick={onReplyAll}>
+      <ToolbarButton label="Reply All" hotkey="R" onClick={onReplyAll}>
         <ReplyAllIcon className="size-4" />
       </ToolbarButton>
-      <ToolbarButton label="Forward" onClick={onForward}>
+      <ToolbarButton label="Forward" hotkey="F" onClick={onForward}>
         <CornerUpRightIcon className="size-4" />
       </ToolbarButton>
-      <ToolbarButton label="Reply All with AI" onClick={onReplyAllWithAi}>
+      <ToolbarButton label="Reply All with AI" hotkey="I" onClick={onReplyAllWithAi}>
         <SparklesIcon className="size-4" />
       </ToolbarButton>
       <Select
@@ -806,9 +800,7 @@ function MessageReader({
       const target = event.target as HTMLElement | null
       if (
         target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       ) {
         return
       }
@@ -819,6 +811,9 @@ function MessageReader({
       } else if (key === 'f') {
         event.preventDefault()
         setCompose({ mode: 'forward' })
+      } else if (key === 'i') {
+        event.preventDefault()
+        setCompose({ mode: 'replyAll', aiPromptOpen: true })
       }
     }
     window.addEventListener('keydown', onKeyDown)

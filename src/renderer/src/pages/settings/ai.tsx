@@ -232,8 +232,8 @@ export function SettingsAiPage(): React.JSX.Element {
         <div>
           <h3 className="text-sm font-semibold">Reply instructions</h3>
           <p className="text-sm text-muted-foreground">
-            Custom instructions the AI follows every time you use "Draft with AI" in the
-            compose window. Tone, signature, language, length — anything goes.
+            Custom instructions the AI follows every time you use "Draft with AI" in the compose
+            window. Tone, signature, language, length — anything goes.
           </p>
         </div>
 

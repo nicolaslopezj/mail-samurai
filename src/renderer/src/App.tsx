@@ -1,10 +1,14 @@
-import { useEffect } from 'react'
+import type { Account } from '@shared/settings'
+import { useEffect, useState } from 'react'
 import { HashRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 
+import { ComposeDialog } from '@/components/compose-dialog'
 import { MainLayout } from '@/components/main-layout'
 import { Toaster } from '@/components/ui/sonner'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { ThemeProvider } from '@/lib/theme'
 import { InboxPage } from '@/pages/inbox'
+import { SettingsAboutPage } from '@/pages/settings/about'
 import { SettingsAccountsPage } from '@/pages/settings/accounts'
 import { SettingsAiPage } from '@/pages/settings/ai'
 import { SettingsAppearancePage } from '@/pages/settings/appearance'
@@ -14,26 +18,68 @@ import { SettingsContactsPage } from '@/pages/settings/contacts'
 import { SettingsLayout } from '@/pages/settings/layout'
 import { SettingsSyncPage } from '@/pages/settings/sync'
 
-function GlobalShortcuts(): null {
+function GlobalShortcuts({ onNewMail }: { onNewMail: () => void }): null {
   const navigate = useNavigate()
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
-      if (event.key !== ',' || !(event.metaKey || event.ctrlKey)) return
-      if (event.shiftKey || event.altKey) return
-      event.preventDefault()
-      navigate('/settings')
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.altKey) return
+      if (event.key === ',' && !event.shiftKey) {
+        event.preventDefault()
+        navigate('/settings')
+        return
+      }
+      if (event.key.toLowerCase() === 'n' && !event.shiftKey) {
+        event.preventDefault()
+        onNewMail()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [navigate])
+  }, [navigate, onNewMail])
   return null
 }
 
+function NewMailDialog({
+  open,
+  onOpenChange
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}): React.JSX.Element | null {
+  const [accounts, setAccounts] = useState<Account[]>([])
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    window.api.accounts.list().then((list) => {
+      if (!cancelled) setAccounts(list)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+  if (!open) return null
+  return (
+    <TooltipProvider delayDuration={0}>
+      <ComposeDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        mode="new"
+        source={null}
+        accounts={accounts}
+        defaultAccountId={accounts[0]?.id}
+      />
+    </TooltipProvider>
+  )
+}
+
 function App(): React.JSX.Element {
+  const [newMailOpen, setNewMailOpen] = useState(false)
   return (
     <ThemeProvider>
       <HashRouter>
-        <GlobalShortcuts />
+        <GlobalShortcuts onNewMail={() => setNewMailOpen(true)} />
+        <NewMailDialog open={newMailOpen} onOpenChange={setNewMailOpen} />
         <Routes>
           <Route path="/settings" element={<SettingsLayout />}>
             <Route index element={<Navigate to="ai" replace />} />
@@ -44,6 +90,7 @@ function App(): React.JSX.Element {
             <Route path="sync" element={<SettingsSyncPage />} />
             <Route path="cloud" element={<SettingsCloudPage />} />
             <Route path="appearance" element={<SettingsAppearancePage />} />
+            <Route path="about" element={<SettingsAboutPage />} />
           </Route>
           <Route element={<MainLayout />}>
             <Route path="/" element={<InboxPage />} />

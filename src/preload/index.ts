@@ -9,6 +9,8 @@ import type {
   AiModel,
   AiProvider,
   AiReplyPreferences,
+  AppApi,
+  AppInfo,
   CategorizationResult,
   Category,
   CategoryAction,
@@ -31,7 +33,8 @@ import type {
   SummaryLanguage,
   SyncApi,
   ThemePreference,
-  UiSettings
+  UiSettings,
+  UpdateState
 } from '../shared/settings'
 
 const settings: SettingsApi = {
@@ -61,10 +64,7 @@ const settings: SettingsApi = {
   setSummaryLanguage: (language: SummaryLanguage) =>
     ipcRenderer.invoke('settings:setSummaryLanguage', language) as Promise<UiSettings>,
   setAiReplyPreferences: (preferences: AiReplyPreferences) =>
-    ipcRenderer.invoke(
-      'settings:setAiReplyPreferences',
-      preferences
-    ) as Promise<UiSettings>
+    ipcRenderer.invoke('settings:setAiReplyPreferences', preferences) as Promise<UiSettings>
 }
 
 const accounts: AccountsApi = {
@@ -134,7 +134,21 @@ const cloud: CloudApi = {
     ipcRenderer.invoke('cloud:setListenOnly', enabled) as Promise<CloudConfig>
 }
 
-const api = { settings, accounts, messages, sync, ai, contacts, cloud }
+const appApi: AppApi = {
+  info: () => ipcRenderer.invoke('app:info') as Promise<AppInfo>,
+  getUpdateState: () => ipcRenderer.invoke('app:getUpdateState') as Promise<UpdateState>,
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates') as Promise<UpdateState>,
+  openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url) as Promise<void>,
+  onUpdateState: (handler: (state: UpdateState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: UpdateState): void => handler(state)
+    ipcRenderer.on('app:updateState', listener)
+    return () => {
+      ipcRenderer.removeListener('app:updateState', listener)
+    }
+  }
+}
+
+const api = { settings, accounts, messages, sync, ai, contacts, cloud, app: appApi }
 
 try {
   contextBridge.exposeInMainWorld('electron', electronAPI)

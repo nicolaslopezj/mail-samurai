@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  .icon {
+    width: 1024px;
+    height: 1024px;
+    border-radius: 230px;
+    overflow: hidden;
+    position: relative;
+    background: url('./moon.png') center/cover no-repeat;
+    box-sizing: border-box;
+  }
+  .inner-shadow {
+    position: absolute; inset: 0;
+    border-radius: 230px;
+    box-shadow: inset 0 -20px 60px rgba(20, 50, 100, 0.18);
+    pointer-events: none;
+  }
+  .top-specular {
+    position: absolute;
+    top: 30px; left: 50%; transform: translateX(-50%);
+    width: 920px; height: 200px;
+    background: radial-gradient(ellipse at center top,
+      rgba(255, 255, 255, 0.35) 0%,
+      rgba(255, 255, 255, 0.12) 40%,
+      rgba(255, 255, 255, 0) 75%);
+    border-radius: 50%;
+    pointer-events: none;
+    filter: blur(8px);
+  }
+  .rim-light {
+    position: absolute; inset: 0;
+    border-radius: 230px;
+    box-shadow:
+      inset 0 2px 0 rgba(255, 255, 255, 0.7),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+    pointer-events: none;
+  }
+  svg.envelope { position: absolute; top: 0; left: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+  <div class="icon">
+    <div class="inner-shadow"></div>
+    <div class="top-specular"></div>
+
+    <svg class="envelope" width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="envWhite" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#FFFFFF" />
+          <stop offset="100%" stop-color="#E0EEFA" />
+        </linearGradient>
+        <linearGradient id="envFlapGlass" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#F2F8FE" />
+          <stop offset="100%" stop-color="#C8DCEF" />
+        </linearGradient>
+        <filter id="envShadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="14" />
+          <feOffset dx="0" dy="14" result="off" />
+          <feComponentTransfer><feFuncA type="linear" slope="0.30" /></feComponentTransfer>
+          <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+
+      <g filter="url(#envShadow)">
+        <rect x="172" y="262" width="680" height="500" rx="60" ry="60" fill="url(#envWhite)" />
+      </g>
+
+      <path
+        d="M 172 417 L 172 702 Q 172 762 232 762 L 792 762 Q 852 762 852 702 L 852 417 L 512 658 Z"
+        fill="url(#envFlapGlass)" />
+      <path
+        d="M 172 417 L 512 658 L 852 417"
+        fill="none" stroke="rgba(255,255,255,0.6)" stroke-width="2" />
+    </svg>
+
+    <div class="rim-light"></div>
+  </div>
+</body>
+</html>

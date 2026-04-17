@@ -2,6 +2,7 @@ import type { ElectronAPI } from '@electron-toolkit/preload'
 import type {
   AccountsApi,
   AiApi,
+  AppApi,
   CloudApi,
   ContactsApi,
   MessagesApi,
@@ -20,6 +21,7 @@ declare global {
       ai: AiApi
       contacts: ContactsApi
       cloud: CloudApi
+      app: AppApi
     }
   }
 }

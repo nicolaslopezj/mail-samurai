@@ -52,9 +52,7 @@ function findFragmentBounds(value: string, caret: number): { start: number; end:
 }
 
 function formatPick(contact: Contact): string {
-  return contact.displayName
-    ? `${contact.displayName} <${contact.address}>`
-    : contact.address
+  return contact.displayName ? `${contact.displayName} <${contact.address}>` : contact.address
 }
 
 /**
@@ -232,9 +230,7 @@ export function AddressInput({
                     c.address === highlighted && 'bg-accent text-accent-foreground'
                   )}
                 >
-                  <span className="w-full truncate text-sm">
-                    {c.displayName || c.address}
-                  </span>
+                  <span className="w-full truncate text-sm">{c.displayName || c.address}</span>
                   {c.displayName && (
                     <span className="w-full truncate text-xs text-muted-foreground">
                       {c.address}

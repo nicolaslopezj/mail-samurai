@@ -98,10 +98,9 @@ export function SettingsContactsPage(): React.JSX.Element {
         {state.status === 'notDetermined' && (
           <div className="mt-4 flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
-              Mail Samurai will ask macOS for permission. Once granted, names
-              from your address book override whatever shows up in email
-              headers — so your wife stays your wife, not &ldquo;Mamá de
-              Jerónimo&rdquo; because a random sender labeled her that.
+              Mail Samurai will ask macOS for permission. Once granted, names from your address book
+              override whatever shows up in email headers — so your wife stays your wife, not
+              &ldquo;Mamá de Jerónimo&rdquo; because a random sender labeled her that.
             </p>
             <Button onClick={handleConnect} disabled={action === 'loading'} className="w-fit">
               {action === 'loading' ? <Loader2Icon className="animate-spin" /> : <UsersIcon />}
@@ -134,11 +133,7 @@ export function SettingsContactsPage(): React.JSX.Element {
         {state.status === 'authorized' && (
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button onClick={handleImport} disabled={action === 'loading'}>
-              {action === 'loading' ? (
-                <Loader2Icon className="animate-spin" />
-              ) : (
-                <RefreshCwIcon />
-              )}
+              {action === 'loading' ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
               {state.storedAddresses === 0 ? 'Import now' : 'Refresh import'}
             </Button>
             {state.storedAddresses > 0 && (
@@ -203,11 +198,7 @@ function StatusLine({
   )
 }
 
-function StatusBadge({
-  status
-}: {
-  status: MacContactsState['status']
-}): React.JSX.Element {
+function StatusBadge({ status }: { status: MacContactsState['status'] }): React.JSX.Element {
   const label =
     status === 'authorized'
       ? 'Connected'
@@ -222,7 +213,5 @@ function StatusBadge({
       : status === 'denied' || status === 'restricted'
         ? 'bg-destructive/15 text-destructive'
         : 'bg-muted text-muted-foreground'
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{label}</span>
-  )
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{label}</span>
 }

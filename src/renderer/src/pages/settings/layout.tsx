@@ -1,6 +1,7 @@
 import {
   ArrowLeftIcon,
   CloudIcon,
+  InfoIcon,
   MailIcon,
   PaletteIcon,
   RefreshCwIcon,
@@ -26,7 +27,8 @@ const NAV: NavItem[] = [
   { to: '/settings/categories', label: 'Categories', icon: TagsIcon },
   { to: '/settings/sync', label: 'Sync', icon: RefreshCwIcon },
   { to: '/settings/cloud', label: 'Cloud sync', icon: CloudIcon },
-  { to: '/settings/appearance', label: 'Appearance', icon: PaletteIcon }
+  { to: '/settings/appearance', label: 'Appearance', icon: PaletteIcon },
+  { to: '/settings/about', label: 'About', icon: InfoIcon }
 ]
 
 export function SettingsLayout(): React.JSX.Element {

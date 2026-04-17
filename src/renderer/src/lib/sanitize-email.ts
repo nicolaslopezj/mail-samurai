@@ -56,8 +56,14 @@ function emailDeclaresOwnBackground(body: HTMLElement): boolean {
     if (/background(?:-color|-image)?\s*:/i.test(style)) return true
     // Only the first couple of wrapper layers — we don't want a styled button
     // deep in the tree to force light mode on an otherwise plain email.
-    if (el.tagName === 'DIV' || el.tagName === 'TABLE' || el.tagName === 'TBODY' ||
-        el.tagName === 'TR' || el.tagName === 'TD' || el.tagName === 'CENTER') {
+    if (
+      el.tagName === 'DIV' ||
+      el.tagName === 'TABLE' ||
+      el.tagName === 'TBODY' ||
+      el.tagName === 'TR' ||
+      el.tagName === 'TD' ||
+      el.tagName === 'CENTER'
+    ) {
       for (const child of Array.from(el.children)) queue.push(child)
     }
   }
@@ -122,7 +128,8 @@ export function buildSanitizedEmailDocument(
     }
   }
 
-  const useDark = options.theme === 'dark' && !emailDeclaresOwnBackground(doc.body)
+  const declaresOwnBackground = emailDeclaresOwnBackground(doc.body)
+  const useDark = options.theme === 'dark' && !declaresOwnBackground
   const innerHtml = doc.body.innerHTML
 
   // Strict CSP: no scripts, no remote scripts/styles/fonts. `style-src
@@ -145,6 +152,10 @@ export function buildSanitizedEmailDocument(
   const fg = useDark ? '#f5f5f7' : '#000000'
   const linkColor = useDark ? '#60a5fa' : '#2563eb'
   const colorScheme = useDark ? 'dark' : 'light'
+  // Marketing emails ship their own wrapper with padding baked in — adding
+  // more would double-indent them. Plain replies / bare HTML get none, so
+  // the text runs edge-to-edge; give those some breathing room.
+  const bodyPadding = declaresOwnBackground ? '0 4px' : '8px 16px'
 
   return `<!doctype html>
 <html>
@@ -159,7 +170,7 @@ export function buildSanitizedEmailDocument(
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         font-size: 14px;
         line-height: 1.5;
-        padding: 0 4px;
+        padding: ${bodyPadding};
         word-break: break-word;
         user-select: text;
         -webkit-user-select: text;

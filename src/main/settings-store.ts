@@ -112,7 +112,9 @@ function sanitizeAiReplyPreferences(value: unknown): AiReplyPreferences {
   if (!value || typeof value !== 'object') return { ...AI_REPLY_PREFERENCES_DEFAULT }
   const raw = value as Partial<AiReplyPreferences>
   const instructions =
-    typeof raw.instructions === 'string' ? raw.instructions.trim().slice(0, AI_REPLY_INSTRUCTIONS_MAX) : ''
+    typeof raw.instructions === 'string'
+      ? raw.instructions.trim().slice(0, AI_REPLY_INSTRUCTIONS_MAX)
+      : ''
   return { instructions }
 }
 
@@ -407,9 +409,7 @@ export async function getSummaryLanguage(): Promise<SummaryLanguage> {
   return (await read()).summaryLanguage
 }
 
-export async function setAiReplyPreferences(
-  preferences: AiReplyPreferences
-): Promise<UiSettings> {
+export async function setAiReplyPreferences(preferences: AiReplyPreferences): Promise<UiSettings> {
   const current = await read()
   const next: PersistedSettings = {
     ...current,

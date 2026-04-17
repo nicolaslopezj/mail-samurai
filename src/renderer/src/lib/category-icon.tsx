@@ -1,4 +1,4 @@
-import { type CategoryIcon } from '@shared/settings'
+import type { CategoryIcon } from '@shared/settings'
 import {
   AlertCircleIcon,
   BellIcon,

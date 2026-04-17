@@ -12,11 +12,10 @@ import {
   SettingsIcon,
   TagIcon
 } from 'lucide-react'
-import { ComposeDialog } from '@/components/compose-dialog'
-import { Button } from '@/components/ui/button'
-import { categoryIconComponent } from '@/lib/category-icon'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { ComposeDialog } from '@/components/compose-dialog'
+import { Button } from '@/components/ui/button'
 import {
   Sidebar,
   SidebarContent,
@@ -30,6 +29,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from '@/components/ui/sidebar'
+import { categoryIconComponent } from '@/lib/category-icon'
 import { cn } from '@/lib/utils'
 
 const EMPTY_COUNTS: MessageCounts = {
@@ -161,8 +161,7 @@ export function AppSidebar(): React.JSX.Element {
                         e.preventDefault()
                         e.dataTransfer.dropEffect = 'move'
                         const rect = e.currentTarget.getBoundingClientRect()
-                        const position =
-                          e.clientY - rect.top < rect.height / 2 ? 'above' : 'below'
+                        const position = e.clientY - rect.top < rect.height / 2 ? 'above' : 'below'
                         if (overIndex !== index) setOverIndex(index)
                         if (overPosition !== position) setOverPosition(position)
                       }}

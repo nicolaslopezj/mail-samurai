@@ -1,9 +1,12 @@
-import { ipcMain } from 'electron'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { app, ipcMain, shell } from 'electron'
 import type {
   AccountDraft,
   AiDraftReplyRequest,
   AiProvider,
   AiReplyPreferences,
+  AppInfo,
   Category,
   CategoryAction,
   CloudCredentials,
@@ -17,6 +20,7 @@ import * as accounts from './accounts-store'
 import { categorizeMessage } from './ai-categorize'
 import { draftReply } from './ai-draft-reply'
 import { listModels } from './ai-models'
+import { checkForUpdatesManually, getUpdateState } from './auto-updater'
 import {
   connectCloud,
   disconnectCloud,
@@ -37,7 +41,45 @@ import * as store from './settings-store'
 import { sendDraft } from './smtp-send'
 import { notifyChanged, reloadInterval, triggerSync } from './sync-scheduler'
 
+const GITHUB_HOMEPAGE = 'https://github.com/nicolaslopezj/mail-samurai'
+
+/**
+ * Resolve the app version from the bundled package.json. `app.getVersion()`
+ * is unreliable in dev (returns the Electron version when the main script
+ * sits under `out/`), so we read the source of truth directly.
+ */
+function readPackageVersion(): string {
+  try {
+    const pkgPath = app.isPackaged
+      ? join(app.getAppPath(), 'package.json')
+      : join(__dirname, '../../package.json')
+    const raw = readFileSync(pkgPath, 'utf8')
+    const parsed = JSON.parse(raw) as { version?: string }
+    if (typeof parsed.version === 'string') return parsed.version
+  } catch {
+    // fall through to Electron's best-effort
+  }
+  return app.getVersion()
+}
+
 export function registerIpcHandlers(): void {
+  // App metadata / updates
+  ipcMain.handle(
+    'app:info',
+    (): AppInfo => ({
+      version: readPackageVersion(),
+      name: 'Mail Samurai',
+      homepage: GITHUB_HOMEPAGE,
+      author: 'Nicolás López'
+    })
+  )
+  ipcMain.handle('app:getUpdateState', () => getUpdateState())
+  ipcMain.handle('app:checkForUpdates', () => checkForUpdatesManually())
+  ipcMain.handle('app:openExternal', (_event, url: string) => {
+    if (!/^https?:\/\//i.test(url)) throw new Error('Refusing to open non-http URL')
+    return shell.openExternal(url)
+  })
+
   // AI / general settings
   ipcMain.handle('settings:get', () => store.getUiSettings())
 
@@ -99,9 +141,8 @@ export function registerIpcHandlers(): void {
     return next
   })
 
-  ipcMain.handle(
-    'settings:setAiReplyPreferences',
-    (_event, preferences: AiReplyPreferences) => store.setAiReplyPreferences(preferences)
+  ipcMain.handle('settings:setAiReplyPreferences', (_event, preferences: AiReplyPreferences) =>
+    store.setAiReplyPreferences(preferences)
   )
 
   // Cloud sync (Turso / libSQL)

@@ -630,3 +630,43 @@ export type AiApi = {
   /** Generate a reply body from the user's instruction + source message. */
   draftReply: (request: AiDraftReplyRequest) => Promise<string>
 }
+
+// ---------------------------------------------------------------------------
+// App meta / updates
+// ---------------------------------------------------------------------------
+
+export type UpdateStatus =
+  | 'idle'
+  | 'dev'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export type UpdateState = {
+  status: UpdateStatus
+  /** The version advertised by the update server, when known. */
+  version?: string
+  /** Human-readable message (error text or status detail). */
+  message?: string
+  /** Download progress 0..1 while status === 'downloading'. */
+  progress?: number
+}
+
+export type AppInfo = {
+  version: string
+  name: string
+  homepage: string
+  author: string
+}
+
+export type AppApi = {
+  info: () => Promise<AppInfo>
+  getUpdateState: () => Promise<UpdateState>
+  checkForUpdates: () => Promise<UpdateState>
+  /** Open an external URL in the user's default browser. */
+  openExternal: (url: string) => Promise<void>
+  onUpdateState: (handler: (state: UpdateState) => void) => () => void
+}

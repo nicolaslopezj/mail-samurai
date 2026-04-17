@@ -1,16 +1,19 @@
 # Mail Samurai
 
-An Electron desktop app that connects to multiple email accounts over IMAP, polls for new messages every 5 minutes, and categorizes them with AI.
+An open-source macOS email client that connects to any IMAP account and uses AI to categorize every message the moment it arrives.
 
-> Status: **skeleton** — the shell is in place, features are not implemented yet.
+**[mail-samurai.com](https://mail-samurai.com)** · **[Download for macOS](https://github.com/nicolaslopezj/mail-samurai/releases/latest)**
+
+## Highlights
+
+- **AI categorization** — describe each category in plain English, an LLM tags every incoming message
+- **Any IMAP account** — Gmail, iCloud, Fastmail, self-hosted; no OAuth apps, no API quotas
+- **Bring your own model** — Anthropic, OpenAI or Google; paste an API key, swap anytime
+- **Local-first** — messages and credentials live in a local SQLite database; API keys are encrypted with the OS keychain
 
 ## Stack
 
-- **Electron** + **Vite** (`electron-vite`) + **React 19** + **TypeScript**
-- **shadcn/ui** + **Tailwind CSS v4**
-- **Biome** for lint + format
-- **IMAP** (planned) — `imapflow` + `mailparser`
-- **AI SDK** (planned) — [Vercel AI SDK](https://sdk.vercel.ai) with user-configurable provider (Anthropic / OpenAI / Google)
+Electron + `electron-vite` + React 19 + TypeScript · shadcn/ui + Tailwind v4 · Biome · `imapflow` + `mailparser` · Vercel AI SDK.
 
 ## Development
 
@@ -23,7 +26,6 @@ Other scripts:
 
 ```bash
 npm run lint         # Biome check
-npm run format       # Biome format
 npm run typecheck    # tsc --noEmit
 npm run build        # electron-vite build
 npm run build:mac    # package .dmg

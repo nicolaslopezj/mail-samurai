@@ -11,7 +11,6 @@ type ContactRow = {
   received_count: number
 }
 
-
 export type ContactSeen = {
   /** Display name as it appeared on this message. `null` if only the bare address was seen. */
   name: string | null
@@ -282,9 +281,7 @@ export function backfillFromMessages(
     date_ms: number
   }
   const rows = db
-    .prepare(
-      `SELECT account_id, from_name, from_address, to_json, cc_json, date_ms FROM messages`
-    )
+    .prepare(`SELECT account_id, from_name, from_address, to_json, cc_json, date_ms FROM messages`)
     .all() as Row[]
   let touched = 0
   const byAccount = new Map<string, ContactSeen[]>()
@@ -292,8 +289,7 @@ export function backfillFromMessages(
     const account = Array.from(accountsByEmail.values()).find((a) => a.id === row.account_id)
     if (!account) continue
     const ownLc = account.email.toLowerCase()
-    const fromOwner =
-      row.from_address != null && row.from_address.toLowerCase() === ownLc
+    const fromOwner = row.from_address != null && row.from_address.toLowerCase() === ownLc
     const to = safeParseAddresses(row.to_json)
     const cc = safeParseAddresses(row.cc_json)
     const sightings: ContactSeen[] = []

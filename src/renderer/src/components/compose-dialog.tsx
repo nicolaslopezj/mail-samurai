@@ -1,9 +1,4 @@
-import type {
-  Account,
-  EmailAddress,
-  EmailDraft,
-  MessageWithBody
-} from '@shared/settings'
+import type { Account, EmailAddress, EmailDraft, MessageWithBody } from '@shared/settings'
 import {
   BoldIcon,
   ItalicIcon,
@@ -118,7 +113,7 @@ function buildQuotedHtml(source: MessageWithBody): string {
       ? `<pre style="font-family:inherit;white-space:pre-wrap;margin:0">${escapeHtml(source.bodyText)}</pre>`
       : ''
   return (
-    `<br><br><div class="gmail_quote">` +
+    `<br><br><div class="gmail_quote" data-mailsamurai-quote="reply">` +
     `<div dir="ltr" class="gmail_attr">${attr}</div>` +
     `<blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${body}</blockquote>` +
     `</div>`
@@ -208,11 +203,12 @@ export function ComposeDialog({
       }
     }
 
-    const ownEmail = (defaultAccountId
-      ? accounts.find((a) => a.id === defaultAccountId)?.email
-      : source.accountId
-        ? accounts.find((a) => a.id === source.accountId)?.email
-        : undefined
+    const ownEmail = (
+      defaultAccountId
+        ? accounts.find((a) => a.id === defaultAccountId)?.email
+        : source.accountId
+          ? accounts.find((a) => a.id === source.accountId)?.email
+          : undefined
     )?.toLowerCase()
 
     if (mode === 'forward') {
@@ -222,7 +218,8 @@ export function ComposeDialog({
       setSubject(prefixSubject(source.subject, 'Fwd'))
       withEditor((el) => {
         el.innerHTML =
-          `<br><br><div>---------- Forwarded message ---------</div>` +
+          `<br><br><div data-mailsamurai-quote="forward">` +
+          `<div>---------- Forwarded message ---------</div>` +
           `<div>From: ${escapeHtml(
             source.from
               ? source.from.name
@@ -235,7 +232,8 @@ export function ComposeDialog({
           (source.bodyHtml ??
             (source.bodyText
               ? `<pre style="font-family:inherit;white-space:pre-wrap;margin:0">${escapeHtml(source.bodyText)}</pre>`
-              : ''))
+              : '')) +
+          `</div>`
       })
       return () => {
         cancelled = true
@@ -314,7 +312,9 @@ export function ComposeDialog({
       .split(/\n{2,}/)
       .map((p) => p.trim())
       .filter((p) => p.length > 0)
-    return paragraphs.map((p) => `<div>${escapeHtml(p).replace(/\n/g, '<br>')}</div>`).join('<div><br></div>')
+    return paragraphs
+      .map((p) => `<div>${escapeHtml(p).replace(/\n/g, '<br>')}</div>`)
+      .join('<div><br></div>')
   }
 
   async function handleAiGenerate(): Promise<void> {
@@ -329,11 +329,10 @@ export function ComposeDialog({
 
     // Read only the user-authored portion (above the quote) as context —
     // otherwise the model "sees" the original message twice and tends to
-    // parrot it back.
-    const quoteEl = el.querySelector('.gmail_quote') as HTMLElement | null
-    const existingText = quoteEl
-      ? extractTextBeforeQuote(el, quoteEl)
-      : el.innerText.trim()
+    // parrot it back. Restrict to direct children so nested quotes inside
+    // the source body (e.g. forwarding a previous reply) don't get matched.
+    const quoteEl = el.querySelector(':scope > [data-mailsamurai-quote]') as HTMLElement | null
+    const existingText = quoteEl ? extractTextBeforeQuote(el, quoteEl) : el.innerText.trim()
 
     try {
       const generated = await window.api.ai.draftReply({
@@ -394,7 +393,8 @@ export function ComposeDialog({
       subject,
       bodyText: text,
       bodyHtml: html || null,
-      inReplyToMessageId: mode === 'reply' || mode === 'replyAll' ? source?.messageId ?? null : null
+      inReplyToMessageId:
+        mode === 'reply' || mode === 'replyAll' ? (source?.messageId ?? null) : null
     }
     try {
       await window.api.messages.send(draft)
@@ -435,11 +435,7 @@ export function ComposeDialog({
           <div className="shrink-0 space-y-0 border-b">
             {accounts.length > 1 && (
               <ComposeRow label="From">
-                <Select
-                  value={accountId}
-                  onValueChange={(v) => setAccountId(v)}
-                  disabled={sending}
-                >
+                <Select value={accountId} onValueChange={(v) => setAccountId(v)} disabled={sending}>
                   <SelectTrigger
                     size="sm"
                     className="h-7 border-0 bg-transparent px-1 text-sm shadow-none hover:bg-muted"
@@ -531,9 +527,7 @@ export function ComposeDialog({
                 setAiError(null)
               }}
             >
-              <SparklesIcon
-                className={cn('size-4', aiPromptOpen && 'text-primary')}
-              />
+              <SparklesIcon className={cn('size-4', aiPromptOpen && 'text-primary')} />
             </FormatButton>
           </div>
 
@@ -564,17 +558,8 @@ export function ComposeDialog({
                   }
                   className="h-8 bg-background"
                 />
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleAiGenerate}
-                  disabled={aiGenerating}
-                >
-                  {aiGenerating ? (
-                    <Loader2Icon className="animate-spin" />
-                  ) : (
-                    <SparklesIcon />
-                  )}
+                <Button type="button" size="sm" onClick={handleAiGenerate} disabled={aiGenerating}>
+                  {aiGenerating ? <Loader2Icon className="animate-spin" /> : <SparklesIcon />}
                   {aiGenerating ? 'Generating…' : 'Generate'}
                 </Button>
                 <button
@@ -587,9 +572,7 @@ export function ComposeDialog({
                   <XIcon className="size-4" />
                 </button>
               </div>
-              {aiError && (
-                <div className="mt-1.5 text-xs text-destructive">{aiError}</div>
-              )}
+              {aiError && <div className="mt-1.5 text-xs text-destructive">{aiError}</div>}
             </div>
           )}
 
