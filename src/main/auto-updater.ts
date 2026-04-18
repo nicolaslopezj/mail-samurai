@@ -19,6 +19,14 @@ export function getUpdateState(): UpdateState {
   return state
 }
 
+export function quitAndInstallUpdate(): void {
+  if (!app.isPackaged) return
+  if (state.status !== 'downloaded') return
+  // `isSilent = true` skips the installer UI; `isForceRunAfter = true` relaunches
+  // the app immediately after install so the user doesn't have to reopen it.
+  autoUpdater.quitAndInstall(true, true)
+}
+
 export async function checkForUpdatesManually(): Promise<UpdateState> {
   if (!app.isPackaged) {
     setState({ status: 'dev', message: 'Updates are only available in packaged builds.' })

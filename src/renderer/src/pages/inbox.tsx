@@ -494,7 +494,7 @@ export function InboxPage({
                   {unreadOnly ? 'Showing unread only' : 'Show unread only'}
                 </TooltipContent>
               </Tooltip>
-              {categoryScoped && visibleMessages && visibleMessages.length > 0 && (
+              {(categoryScoped || otherScoped) && visibleMessages && visibleMessages.length > 0 && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button

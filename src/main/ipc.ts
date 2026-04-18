@@ -23,7 +23,7 @@ import * as accounts from './accounts-store'
 import { categorizeMessage } from './ai-categorize'
 import { draftReply } from './ai-draft-reply'
 import { listModels } from './ai-models'
-import { checkForUpdatesManually, getUpdateState } from './auto-updater'
+import { checkForUpdatesManually, getUpdateState, quitAndInstallUpdate } from './auto-updater'
 import {
   connectCloud,
   disconnectCloud,
@@ -126,6 +126,9 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle('app:getUpdateState', () => getUpdateState())
   ipcMain.handle('app:checkForUpdates', () => checkForUpdatesManually())
+  ipcMain.handle('app:quitAndInstall', () => {
+    quitAndInstallUpdate()
+  })
   ipcMain.handle('app:openExternal', (_event, url: string) => {
     if (!/^https?:\/\//i.test(url)) throw new Error('Refusing to open non-http URL')
     return shell.openExternal(url)

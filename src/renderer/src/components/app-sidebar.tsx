@@ -4,10 +4,12 @@ import {
   CATEGORY_COUNT_MODE_DEFAULT,
   type Category,
   type CategoryCountMode,
-  type MessageCounts
+  type MessageCounts,
+  type UpdateState
 } from '@shared/settings'
 import {
   ArchiveIcon,
+  DownloadIcon,
   InboxIcon,
   MailsIcon,
   PenSquareIcon,
@@ -63,6 +65,8 @@ export function AppSidebar(): React.JSX.Element {
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const [overPosition, setOverPosition] = useState<'above' | 'below'>('above')
   const [composeOpen, setComposeOpen] = useState(false)
+  const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' })
+  const [installing, setInstalling] = useState(false)
 
   function clearCategoryDrag(): void {
     setDragIndex(null)
@@ -129,6 +133,19 @@ export function AppSidebar(): React.JSX.Element {
       refreshCounts()
     })
   }, [refreshCounts])
+
+  useEffect(() => {
+    window.api.app.getUpdateState().then(setUpdateState)
+    return window.api.app.onUpdateState(setUpdateState)
+  }, [])
+
+  function handleInstallUpdate(): void {
+    setInstalling(true)
+    window.api.app.quitAndInstall().catch((err) => {
+      console.error('[auto-updater] quitAndInstall failed:', err)
+      setInstalling(false)
+    })
+  }
 
   return (
     <Sidebar collapsible="none" className="drag w-full">
@@ -314,6 +331,26 @@ export function AppSidebar(): React.JSX.Element {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
+        {updateState.status === 'downloaded' && (
+          <div className="no-drag px-2 pb-1">
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleInstallUpdate}
+              disabled={installing}
+              className="w-full justify-start gap-2"
+            >
+              <DownloadIcon />
+              <span>
+                {installing
+                  ? 'Restarting…'
+                  : updateState.version
+                    ? `Update to ${updateState.version}`
+                    : 'Update now'}
+              </span>
+            </Button>
+          </div>
+        )}
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton

@@ -147,6 +147,7 @@ const appApi: AppApi = {
   info: () => ipcRenderer.invoke('app:info') as Promise<AppInfo>,
   getUpdateState: () => ipcRenderer.invoke('app:getUpdateState') as Promise<UpdateState>,
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates') as Promise<UpdateState>,
+  quitAndInstall: () => ipcRenderer.invoke('app:quitAndInstall') as Promise<void>,
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url) as Promise<void>,
   exportLogs: () => ipcRenderer.invoke('app:exportLogs') as Promise<ExportLogsResult>,
   onUpdateState: (handler: (state: UpdateState) => void) => {

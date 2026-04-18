@@ -648,6 +648,11 @@ export type AppApi = {
   info: () => Promise<AppInfo>
   getUpdateState: () => Promise<UpdateState>
   checkForUpdates: () => Promise<UpdateState>
+  /**
+   * Quit the app and install a previously downloaded update. Only takes effect
+   * when the current update status is `downloaded`; otherwise it's a no-op.
+   */
+  quitAndInstall: () => Promise<void>
   /** Open an external URL in the user's default browser. */
   openExternal: (url: string) => Promise<void>
   /**
