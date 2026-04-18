@@ -25,17 +25,30 @@ export type SyncResult = {
   deleted: number
 }
 
-function makeClient(account: Account, password: string): ImapFlow {
-  return new ImapFlow({
-    host: account.host,
-    port: account.port,
-    secure: true,
-    auth: { user: account.email, pass: password },
-    logger: false,
-    connectionTimeout: 15_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 60_000
+function attachImapErrorHandler(client: ImapFlow, accountEmail: string): ImapFlow {
+  client.on('error', (err) => {
+    const code = (err as { code?: string } | null)?.code
+    const method =
+      code === 'EPIPE' || code === 'ECONNRESET' || code === 'ETIMEDOUT' ? 'warn' : 'error'
+    console[method](`[imap] ${accountEmail} connection error${code ? ` (${code})` : ''}:`, err)
   })
+  return client
+}
+
+function makeClient(account: Account, password: string): ImapFlow {
+  return attachImapErrorHandler(
+    new ImapFlow({
+      host: account.host,
+      port: account.port,
+      secure: true,
+      auth: { user: account.email, pass: password },
+      logger: false,
+      connectionTimeout: 15_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 60_000
+    }),
+    account.email
+  )
 }
 
 function toAddress(

@@ -1,6 +1,16 @@
 import { ImapFlow } from 'imapflow'
 import { type AccountDraft, IMAP_PRESETS } from '../shared/settings'
 
+function attachImapErrorHandler(client: ImapFlow, accountEmail: string): ImapFlow {
+  client.on('error', (err) => {
+    const code = (err as { code?: string } | null)?.code
+    const method =
+      code === 'EPIPE' || code === 'ECONNRESET' || code === 'ETIMEDOUT' ? 'warn' : 'error'
+    console[method](`[imap:test] ${accountEmail} connection error${code ? ` (${code})` : ''}:`, err)
+  })
+  return client
+}
+
 /** Resolve hostname/port from provider preset, or from the draft's custom values. */
 export function resolveImapHost(draft: AccountDraft): { host: string; port: number } {
   if (draft.provider === 'custom') {
@@ -16,17 +26,20 @@ export function resolveImapHost(draft: AccountDraft): { host: string; port: numb
  */
 export async function testImapAuth(draft: AccountDraft): Promise<void> {
   const { host, port } = resolveImapHost(draft)
-  const client = new ImapFlow({
-    host,
-    port,
-    secure: true,
-    auth: { user: draft.email, pass: draft.password },
-    logger: false,
-    // Keep the test snappy — fail fast on bad creds / unreachable host.
-    connectionTimeout: 15_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 20_000
-  })
+  const client = attachImapErrorHandler(
+    new ImapFlow({
+      host,
+      port,
+      secure: true,
+      auth: { user: draft.email, pass: draft.password },
+      logger: false,
+      // Keep the test snappy — fail fast on bad creds / unreachable host.
+      connectionTimeout: 15_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000
+    }),
+    draft.email
+  )
 
   try {
     await client.connect()
