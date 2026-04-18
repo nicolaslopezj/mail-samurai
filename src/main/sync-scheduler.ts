@@ -175,9 +175,12 @@ async function runRealtimeWorker(worker: RealtimeWorker): Promise<void> {
           }
 
           try {
-            const fetched = await currentClient.fetchOne(String(data.seq), { uid: true, flags: true })
+            const fetched = await currentClient.fetchOne(String(data.seq), {
+              uid: true,
+              flags: true
+            })
             const uid = fetched && typeof fetched.uid === 'number' ? fetched.uid : null
-            const flags = fetched && fetched.flags ? fetched.flags : data.flags
+            const flags = fetched?.flags ? fetched.flags : data.flags
             if (uid !== null) {
               const applied = await applyRemoteFlagUpdate(worker, uid, flags)
               if (applied) return
