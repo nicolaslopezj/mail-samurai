@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_contacts_address
 -- User's macOS Contacts app, imported on demand via CNContactStore. Takes
 -- priority over \`contacts.display_name\` for the same address — the user's
 -- own address book is the source of truth for names (e.g., "my wife" stays
--- my wife, not "Mamá de Jerónimo" as some random sender once labeled her).
+-- my wife, not "Mamá de XX" as some random sender once labeled her).
 -- One row per address; a single Mac contact with N emails becomes N rows.
 CREATE TABLE IF NOT EXISTS mac_contacts (
   address        TEXT    NOT NULL PRIMARY KEY,

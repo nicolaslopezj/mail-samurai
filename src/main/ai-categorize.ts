@@ -35,6 +35,7 @@ export type CategorizationResult = {
 export async function categorizeMessage(
   message: MessageWithBody,
   categories: Category[],
+  allowUncategorized: boolean,
   provider: AiProvider,
   modelId: string,
   apiKey: string,
@@ -48,14 +49,15 @@ export async function categorizeMessage(
     SUMMARY_LANGUAGES.find((l) => l.value === summaryLanguage)?.promptName ?? ''
 
   const NONE = '__none__'
-  const allowedIds: [string, ...string[]] = [NONE, ...categories.map((c) => c.id)]
+  const categoryIds = categories.map((c) => c.id)
+  const allowedIds = allowUncategorized ? [NONE, ...categoryIds] : categoryIds
   // `language` comes FIRST on purpose: forcing the model to declare the email's
   // language before writing the summary reliably keeps summaries in the right
   // language (without this field the model tends to drift to the user's locale).
   const schema = z.object({
     language: z.string(),
     summary: z.string(),
-    categoryId: z.enum(allowedIds),
+    categoryId: z.enum(allowedIds as [string, ...string[]]),
     reason: z.string()
   })
 
@@ -101,6 +103,22 @@ ${bodyText}`
    - Factual gist: what the email is about and what it asks for / announces.
      No marketing fluff, no greetings, no signatures.`
 
+  const categoryRule = allowUncategorized
+    ? `3. \`categoryId\`:
+   - The DEFAULT outcome is "${NONE}" (no category). Most emails belong here.
+   - Only pick a category when the email clearly and specifically matches
+     that category's rule. Surface-level topical similarity is NOT enough.
+   - If you are unsure, or if more than one category could plausibly fit,
+     return "${NONE}".
+   - Never invent a category id. Pick from the provided list or use
+     "${NONE}".`
+    : `3. \`categoryId\`:
+   - You MUST choose exactly one real category id from the provided list.
+   - Never return "${NONE}" and never leave the field empty.
+   - Pick the single best match based on the user's rules, even when the fit
+     is weak or more than one category could plausibly apply.
+   - Never invent a category id.`
+
   const system = `You route incoming email into user-defined categories and
 write a short summary of each email.
 
@@ -108,30 +126,32 @@ Fill the fields in this order — each one depends on the previous.
 
 ${languageRule}
 
-3. \`categoryId\`:
-   - The DEFAULT outcome is "${NONE}" (no category). Most emails belong here.
-   - Only pick a category when the email clearly and specifically matches
-     that category's rule. Surface-level topical similarity is NOT enough.
-   - If you are unsure, or if more than one category could plausibly fit,
-     return "${NONE}".
-   - Never invent a category id. Pick from the provided list or use
-     "${NONE}".
+${categoryRule}
 
 4. \`reason\`: one sentence (under 240 chars) stating which rule matched
    (and why), or why no rule matched. This field may be in English.`
 
-  const prompt = `Categories (id "${NONE}" means "no category fits"):
+  const categoriesPrompt = allowUncategorized
+    ? `Categories (id "${NONE}" means "no category fits"):
 - id: ${NONE}
   name: Uncategorized
   rule: Use this whenever no category below clearly matches.
-${categoriesBlock}
+${categoriesBlock}`
+    : `Categories:
+${categoriesBlock}`
+
+  const closingInstruction = allowUncategorized
+    ? `Think: does the email clearly satisfy any rule above? If not, return "${NONE}".`
+    : 'Think: which single category is the best match for this email?'
+
+  const prompt = `${categoriesPrompt}
 
 Email to classify:
 """
 ${emailBlock}
 """
 
-Think: does the email clearly satisfy any rule above? If not, return "${NONE}".`
+${closingInstruction}`
 
   const { object } = await generateObject({
     model,

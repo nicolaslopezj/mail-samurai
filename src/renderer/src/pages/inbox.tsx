@@ -9,6 +9,7 @@ import {
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ArchiveXIcon,
   CornerUpLeftIcon,
   CornerUpRightIcon,
   FilterIcon,
@@ -38,6 +39,22 @@ import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 
 const OTHER_CATEGORY_VALUE = '__other__'
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null
+  if (!element) return false
+  return element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.isContentEditable
+}
+
+type ReaderShortcut = 'archive' | 'unarchive' | 'replyAll' | 'forward' | 'replyAllWithAi'
+
+type PendingArchive = {
+  entries: { accountId: string; uid: number }[]
+  mode: 'archive' | 'unarchive'
+  timeoutId: ReturnType<typeof setTimeout>
+  toastId: string | number
+  selectionBefore: { accountId: string; uid: number } | null
+}
 
 function formatDate(ms: number): string {
   const d = new Date(ms)
@@ -97,6 +114,7 @@ export function InboxPage({
   const [messages, setMessages] = useState<Message[] | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [allowUncategorized, setAllowUncategorized] = useState(true)
   const [selected, setSelected] = useState<{ accountId: string; uid: number } | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [unreadOnly, setUnreadOnly] = useState(false)
@@ -120,7 +138,10 @@ export function InboxPage({
 
   useEffect(() => {
     window.api.settings.get().then((s) => {
-      if (isMountedRef.current) setCategories(s.categories)
+      if (isMountedRef.current) {
+        setCategories(s.categories)
+        setAllowUncategorized(s.allowUncategorized)
+      }
     })
   }, [])
 
@@ -172,7 +193,9 @@ export function InboxPage({
   const headerTitle = categoryId
     ? (currentCategory?.name ?? 'Category')
     : otherScoped
-      ? 'Other'
+      ? allowUncategorized
+        ? 'Other'
+        : 'Inbox'
       : archiveScoped
         ? accountId
           ? `${accountLabel} · Archive`
@@ -180,11 +203,30 @@ export function InboxPage({
         : accountId
           ? `${accountLabel} · Inbox`
           : 'All Inboxes'
+  // Deferred archive queue. Actions land in the UI instantly (selection
+  // moves, messages are hidden) but the IPC call is held back for
+  // `ARCHIVE_DEFER_MS` so the user can undo with Cmd+Z or the toast button
+  // without any IMAP churn. At most one batch is pending at a time — a new
+  // archive while one is pending flushes the previous one immediately.
+  const pendingArchiveRef = useRef<PendingArchive | null>(null)
+  const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null)
+
+  const pendingKeys = useMemo(() => {
+    const set = new Set<string>()
+    if (pendingArchive) {
+      for (const e of pendingArchive.entries) set.add(`${e.accountId}:${e.uid}`)
+    }
+    return set
+  }, [pendingArchive])
+
   const visibleMessages = useMemo(() => {
     if (!messages) return null
-    if (!unreadOnly) return messages
-    return messages.filter((m) => !m.seen)
-  }, [messages, unreadOnly])
+    const hasPending = pendingKeys.size > 0
+    let list = messages
+    if (hasPending) list = list.filter((m) => !pendingKeys.has(`${m.accountId}:${m.uid}`))
+    if (unreadOnly) list = list.filter((m) => !m.seen)
+    return list
+  }, [messages, unreadOnly, pendingKeys])
   const selectedIndex = useMemo(() => {
     if (!visibleMessages || !selected) return -1
     return visibleMessages.findIndex(
@@ -213,125 +255,155 @@ export function InboxPage({
     [visibleMessages]
   )
 
-  // Tracks the last archive/unarchive so Cmd+Z (or Ctrl+Z) can flip it back.
-  // Single-step undo — consumed after use, not a stack.
-  const lastArchiveActionRef = useRef<{
-    action: 'archive' | 'unarchive'
-    accountId: string
-    uid: number
-  } | null>(null)
+  const fireArchiveActions = useCallback(
+    (entries: { accountId: string; uid: number }[], mode: 'archive' | 'unarchive') => {
+      for (const entry of entries) {
+        const call =
+          mode === 'archive'
+            ? window.api.messages.archive(entry.accountId, entry.uid)
+            : window.api.messages.unarchive(entry.accountId, entry.uid)
+        call.catch((err) => {
+          console.error(`${mode} uid=${entry.uid} failed:`, err)
+          toast.error(mode === 'archive' ? 'Archive failed' : 'Unarchive failed')
+          loadMessages()
+        })
+      }
+    },
+    [loadMessages]
+  )
+
+  const commitPendingArchive = useCallback((): void => {
+    const p = pendingArchiveRef.current
+    if (!p) return
+    clearTimeout(p.timeoutId)
+    toast.dismiss(p.toastId)
+    pendingArchiveRef.current = null
+    setPendingArchive(null)
+    fireArchiveActions(p.entries, p.mode)
+  }, [fireArchiveActions])
+
+  const undoPendingArchive = useCallback((): void => {
+    const p = pendingArchiveRef.current
+    if (!p) return
+    clearTimeout(p.timeoutId)
+    toast.dismiss(p.toastId)
+    pendingArchiveRef.current = null
+    setPendingArchive(null)
+    if (p.selectionBefore) setSelected(p.selectionBefore)
+  }, [])
+
+  const enqueueArchive = useCallback(
+    (
+      entries: { accountId: string; uid: number; subject: string | null }[],
+      mode: 'archive' | 'unarchive',
+      selectionBefore: { accountId: string; uid: number } | null
+    ) => {
+      if (entries.length === 0) return
+      // Flush any previous pending batch — undo window for older actions
+      // closes as soon as the user takes a new one.
+      commitPendingArchive()
+
+      const ARCHIVE_DEFER_MS = 5000
+      const label = mode === 'archive' ? 'Archived' : 'Moved to inbox'
+      const description =
+        entries.length === 1 ? entries[0].subject || '(no subject)' : `${entries.length} messages`
+
+      const stripped = entries.map((e) => ({ accountId: e.accountId, uid: e.uid }))
+      const timeoutId = setTimeout(() => {
+        commitPendingArchive()
+      }, ARCHIVE_DEFER_MS)
+      const toastId = toast(label, {
+        description,
+        duration: ARCHIVE_DEFER_MS,
+        action: {
+          label: 'Undo',
+          onClick: () => undoPendingArchive()
+        }
+      })
+
+      const pending: PendingArchive = {
+        entries: stripped,
+        mode,
+        timeoutId,
+        toastId,
+        selectionBefore
+      }
+      pendingArchiveRef.current = pending
+      setPendingArchive(pending)
+    },
+    [commitPendingArchive, undoPendingArchive]
+  )
 
   const handleArchiveAction = useCallback(
-    async (action: 'archive' | 'unarchive', message: Message) => {
+    (
+      action: 'archive' | 'unarchive',
+      message: Pick<Message, 'accountId' | 'uid' | 'subject' | 'archivedAt'>
+    ) => {
       const wasArchived = message.archivedAt !== null
       if (action === 'archive' && wasArchived) return
       if (action === 'unarchive' && !wasArchived) return
 
       // Move selection to a neighbor before the message disappears from the
-      // current view, so the reader pane lands on something instead of going
-      // blank. Reload from `messages:changed` will rebuild the list shortly.
+      // filtered list, so the reader pane lands on something instead of
+      // going blank.
+      const selectionBefore = selected
       if (visibleMessages) {
         const idx = visibleMessages.findIndex(
           (m) => m.accountId === message.accountId && m.uid === message.uid
         )
         if (idx >= 0) {
           const neighbor = visibleMessages[idx + 1] ?? visibleMessages[idx - 1] ?? null
-          if (neighbor) {
-            setSelected({ accountId: neighbor.accountId, uid: neighbor.uid })
-          } else {
-            setSelected(null)
-          }
+          setSelected(neighbor ? { accountId: neighbor.accountId, uid: neighbor.uid } : null)
         }
       }
 
-      setMessages((prev) =>
-        prev
-          ? prev.filter((m) => !(m.accountId === message.accountId && m.uid === message.uid))
-          : prev
-      )
-
-      // Optimistic — toast and undo land instantly. The IPC round-trip
-      // happens in the background; on failure we revert and show an error.
-      lastArchiveActionRef.current = {
+      enqueueArchive(
+        [{ accountId: message.accountId, uid: message.uid, subject: message.subject ?? null }],
         action,
-        accountId: message.accountId,
-        uid: message.uid
-      }
-      const subject = message.subject || '(no subject)'
-      const toastId = toast(action === 'archive' ? 'Archived' : 'Moved to inbox', {
-        description: subject,
-        duration: 8000,
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            undoLastArchiveActionRef.current?.()
-          }
-        }
-      })
-
-      try {
-        if (action === 'archive') {
-          await window.api.messages.archive(message.accountId, message.uid)
-        } else {
-          await window.api.messages.unarchive(message.accountId, message.uid)
-        }
-      } catch (err) {
-        console.error(`${action} failed:`, err)
-        toast.dismiss(toastId)
-        toast.error(action === 'archive' ? 'Archive failed' : 'Unarchive failed', {
-          description: subject
-        })
-        if (lastArchiveActionRef.current?.uid === message.uid) {
-          lastArchiveActionRef.current = null
-        }
-        loadMessages()
-      }
+        selectionBefore
+      )
     },
-    [visibleMessages, loadMessages]
+    [visibleMessages, selected, enqueueArchive]
   )
 
-  const undoLastArchiveAction = useCallback(async () => {
-    const last = lastArchiveActionRef.current
-    if (!last) return
-    lastArchiveActionRef.current = null
-    try {
-      if (last.action === 'archive') {
-        await window.api.messages.unarchive(last.accountId, last.uid)
-      } else {
-        await window.api.messages.archive(last.accountId, last.uid)
-      }
-    } catch (err) {
-      console.error(`undo ${last.action} failed:`, err)
-      loadMessages()
-    }
-  }, [loadMessages])
-
-  // Toast's action callback is captured at toast()-call time, so it would
-  // see a stale `undoLastArchiveAction`. A ref bridges to the current one.
-  const undoLastArchiveActionRef = useRef(undoLastArchiveAction)
-  useEffect(() => {
-    undoLastArchiveActionRef.current = undoLastArchiveAction
-  }, [undoLastArchiveAction])
+  const handleArchiveAll = useCallback(() => {
+    if (!visibleMessages || visibleMessages.length === 0) return
+    const targets = visibleMessages.filter((m) => m.archivedAt === null)
+    if (targets.length === 0) return
+    const selectionBefore = selected
+    setSelected(null)
+    enqueueArchive(
+      targets.map((m) => ({ accountId: m.accountId, uid: m.uid, subject: m.subject })),
+      'archive',
+      selectionBefore
+    )
+  }, [visibleMessages, selected, enqueueArchive])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key.toLowerCase() !== 'z') return
       if (!(event.metaKey || event.ctrlKey)) return
       if (event.shiftKey || event.altKey) return
-      const target = event.target as HTMLElement | null
-      if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      ) {
-        return
-      }
-      if (!lastArchiveActionRef.current) return
+      if (isEditableTarget(event.target)) return
+      if (!pendingArchiveRef.current) return
       event.preventDefault()
-      undoLastArchiveAction()
+      undoPendingArchive()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undoLastArchiveAction])
+  }, [undoPendingArchive])
+
+  // Commit any still-pending archive when the page unmounts so we don't
+  // silently drop the user's action on navigation.
+  useEffect(() => {
+    return () => {
+      const p = pendingArchiveRef.current
+      if (!p) return
+      clearTimeout(p.timeoutId)
+      pendingArchiveRef.current = null
+      fireArchiveActions(p.entries, p.mode)
+    }
+  }, [fireArchiveActions])
 
   const handleListKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {
@@ -364,17 +436,25 @@ export function InboxPage({
         selectMessageAtIndex(visibleMessages.length - 1, { focus: true })
         return
       }
-
-      if (event.key.toLowerCase() === 'e' && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        if (selectedIndex < 0) return
-        const current = visibleMessages[selectedIndex]
-        if (!current) return
-        event.preventDefault()
-        handleArchiveAction(event.shiftKey ? 'unarchive' : 'archive', current)
-      }
     },
-    [visibleMessages, selectMessageAtIndex, selectedIndex, handleArchiveAction]
+    [visibleMessages, selectMessageAtIndex, selectedIndex]
   )
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.defaultPrevented) return
+      if (event.key.toLowerCase() !== 'e') return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (isEditableTarget(event.target)) return
+      if (!visibleMessages || selectedIndex < 0) return
+      const current = visibleMessages[selectedIndex]
+      if (!current) return
+      event.preventDefault()
+      handleArchiveAction(event.shiftKey ? 'unarchive' : 'archive', current)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [visibleMessages, selectedIndex, handleArchiveAction])
 
   useEffect(() => {
     if (!visibleMessages || visibleMessages.length === 0 || selectedIndex < 0) return
@@ -414,6 +494,21 @@ export function InboxPage({
                   {unreadOnly ? 'Showing unread only' : 'Show unread only'}
                 </TooltipContent>
               </Tooltip>
+              {categoryScoped && visibleMessages && visibleMessages.length > 0 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={handleArchiveAll}
+                      className="no-drag rounded p-1 text-muted-foreground hover:bg-muted"
+                      aria-label="Archive all"
+                    >
+                      <ArchiveXIcon className="size-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Archive all</TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -533,6 +628,7 @@ export function InboxPage({
                         <MessageMeta
                           message={m}
                           category={m.categoryId ? (categoryById.get(m.categoryId) ?? null) : null}
+                          allowUncategorized={allowUncategorized}
                           account={!accountId ? (account ?? null) : null}
                         />
                       </button>
@@ -546,7 +642,7 @@ export function InboxPage({
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel id="reader" defaultSize="65%" minSize="35%">
-        <MessageReader selected={selected} />
+        <MessageReader selected={selected} onArchiveAction={handleArchiveAction} />
       </ResizablePanel>
     </ResizablePanelGroup>
   )
@@ -555,10 +651,12 @@ export function InboxPage({
 function MessageMeta({
   message,
   category,
+  allowUncategorized,
   account
 }: {
   message: Message
   category: Category | null
+  allowUncategorized: boolean
   account: Account | null
 }): React.JSX.Element | null {
   const isAnalyzing = message.categorizedAt === null
@@ -567,7 +665,7 @@ function MessageMeta({
     ? null
     : category
       ? category.name
-      : message.categoryId === null
+      : allowUncategorized && message.categoryId === null
         ? 'Other'
         : null
   const accountLabel = account ? accountDisplayName(account) : null
@@ -633,9 +731,9 @@ function MessageToolbar({
   message,
   onToggleSeen,
   categories,
+  allowUncategorized,
   onSetCategory,
   onArchiveToggle,
-  archiving,
   onReply,
   onReplyAll,
   onForward,
@@ -644,9 +742,9 @@ function MessageToolbar({
   message: MessageWithBody
   onToggleSeen: () => void
   categories: Category[]
+  allowUncategorized: boolean
   onSetCategory: (categoryId: string | null) => void
   onArchiveToggle: () => void
-  archiving: boolean
   onReply: () => void
   onReplyAll: () => void
   onForward: () => void
@@ -656,7 +754,13 @@ function MessageToolbar({
   // Radix Select treats '' as the placeholder state — use it when the message
   // has never been categorized so the trigger falls back to the placeholder
   // text instead of highlighting an item that isn't really selected.
-  const selectValue = !isCategorized ? '' : (message.categoryId ?? OTHER_CATEGORY_VALUE)
+  const selectValue = !isCategorized
+    ? ''
+    : message.categoryId
+      ? message.categoryId
+      : allowUncategorized
+        ? OTHER_CATEGORY_VALUE
+        : ''
   const isArchived = message.archivedAt !== null
 
   return (
@@ -671,11 +775,8 @@ function MessageToolbar({
         label={isArchived ? 'Move back to inbox' : 'Archive'}
         hotkey={isArchived ? '⇧E' : 'E'}
         onClick={onArchiveToggle}
-        disabled={archiving}
       >
-        {archiving ? (
-          <Loader2Icon className="size-4 animate-spin" />
-        ) : isArchived ? (
+        {isArchived ? (
           <ArchiveRestoreIcon className="size-4" />
         ) : (
           <ArchiveIcon className="size-4" />
@@ -708,7 +809,7 @@ function MessageToolbar({
           <SelectValue placeholder="Uncategorized" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={OTHER_CATEGORY_VALUE}>Other</SelectItem>
+          {allowUncategorized && <SelectItem value={OTHER_CATEGORY_VALUE}>Other</SelectItem>}
           {categories.map((c) => (
             <SelectItem key={c.id} value={c.id}>
               {c.name}
@@ -721,15 +822,20 @@ function MessageToolbar({
 }
 
 function MessageReader({
-  selected
+  selected,
+  onArchiveAction
 }: {
   selected: { accountId: string; uid: number } | null
+  onArchiveAction: (
+    action: 'archive' | 'unarchive',
+    message: Pick<MessageWithBody, 'accountId' | 'uid' | 'subject' | 'archivedAt'>
+  ) => void
 }): React.JSX.Element {
   const [message, setMessage] = useState<MessageWithBody | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadRemoteImages, setLoadRemoteImages] = useState(false)
   const [categories, setCategories] = useState<Category[]>([])
-  const [archiving, setArchiving] = useState(false)
+  const [allowUncategorized, setAllowUncategorized] = useState(true)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [compose, setCompose] = useState<{
     mode: ComposeMode
@@ -755,6 +861,7 @@ function MessageReader({
       if (cancelled) return
       setLoadRemoteImages(s.loadRemoteImages)
       setCategories(s.categories)
+      setAllowUncategorized(s.allowUncategorized)
     })
     return () => {
       cancelled = true
@@ -791,34 +898,59 @@ function MessageReader({
     }
   }, [selected])
 
+  const handleArchiveToggle = useCallback(
+    (forceUnarchive = false): void => {
+      if (!message) return
+      const wasArchived = message.archivedAt !== null
+      const action: 'archive' | 'unarchive' =
+        forceUnarchive || wasArchived ? 'unarchive' : 'archive'
+      onArchiveAction(action, message)
+    },
+    [message, onArchiveAction]
+  )
+
+  const runReaderShortcut = useCallback(
+    (shortcut: ReaderShortcut) => {
+      if (shortcut === 'replyAll') {
+        setCompose({ mode: 'replyAll' })
+        return
+      }
+      if (shortcut === 'forward') {
+        setCompose({ mode: 'forward' })
+        return
+      }
+      if (shortcut === 'replyAllWithAi') {
+        setCompose({ mode: 'replyAll', aiPromptOpen: true })
+        return
+      }
+      handleArchiveToggle(shortcut === 'unarchive')
+    },
+    [handleArchiveToggle]
+  )
+
   // R → Reply All, F → Forward, while a message is open and focus isn't in
   // an editable field (the message list listbox counts as non-editable).
   useEffect(() => {
     if (!message || compose) return
     function onKeyDown(event: KeyboardEvent): void {
+      if (event.defaultPrevented) return
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
-      const target = event.target as HTMLElement | null
-      if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      ) {
-        return
-      }
+      if (isEditableTarget(event.target)) return
       const key = event.key.toLowerCase()
       if (key === 'r') {
         event.preventDefault()
-        setCompose({ mode: 'replyAll' })
+        runReaderShortcut('replyAll')
       } else if (key === 'f') {
         event.preventDefault()
-        setCompose({ mode: 'forward' })
+        runReaderShortcut('forward')
       } else if (key === 'i') {
         event.preventDefault()
-        setCompose({ mode: 'replyAll', aiPromptOpen: true })
+        runReaderShortcut('replyAllWithAi')
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [message, compose])
+  }, [message, compose, runReaderShortcut])
 
   if (!selected) {
     return (
@@ -866,35 +998,15 @@ function MessageReader({
     }
   }
 
-  async function handleArchiveToggle(): Promise<void> {
-    if (!message) return
-    const previousArchivedAt = message.archivedAt
-    const wasArchived = previousArchivedAt !== null
-    setMessage({ ...message, archivedAt: wasArchived ? null : Date.now() })
-    setArchiving(true)
-    try {
-      if (wasArchived) {
-        await window.api.messages.unarchive(message.accountId, message.uid)
-      } else {
-        await window.api.messages.archive(message.accountId, message.uid)
-      }
-    } catch (err) {
-      console.error('archive toggle failed:', err)
-      setMessage((prev) => (prev ? { ...prev, archivedAt: previousArchivedAt } : prev))
-    } finally {
-      setArchiving(false)
-    }
-  }
-
   return (
     <article className="flex h-full flex-col">
       <MessageToolbar
         message={message}
         onToggleSeen={handleToggleSeen}
         categories={categories}
+        allowUncategorized={allowUncategorized}
         onSetCategory={handleSetCategory}
         onArchiveToggle={handleArchiveToggle}
-        archiving={archiving}
         onReply={() => setCompose({ mode: 'reply' })}
         onReplyAll={() => setCompose({ mode: 'replyAll' })}
         onForward={() => setCompose({ mode: 'forward' })}
@@ -928,6 +1040,7 @@ function MessageReader({
             html={message.bodyHtml}
             attachments={message.inlineAttachments}
             loadRemoteImages={loadRemoteImages}
+            onShortcut={compose ? null : runReaderShortcut}
           />
         </div>
       ) : message.bodyText ? (
@@ -958,10 +1071,11 @@ function MessageReader({
  * Render an email HTML body inside a fully isolated sandboxed iframe.
  *
  * Defenses (see also `lib/sanitize-email.ts`):
- *  - `sandbox=""` + explicit `allow-popups allow-popups-to-escape-sandbox`:
- *    scripts / same-origin / forms / top-nav all disabled. Link clicks become
- *    window-open events, which Electron's `setWindowOpenHandler` in main
- *    routes to `shell.openExternal` — no in-app navigation, ever.
+ *  - `sandbox=""` + explicit `allow-scripts allow-popups
+ *    allow-popups-to-escape-sandbox`: unique origin, no forms, no top-nav.
+ *    The document's CSP only allows our inline shortcut bridge script. Link
+ *    clicks become window-open events, which Electron's
+ *    `setWindowOpenHandler` in main routes to `shell.openExternal`.
  *  - `srcdoc`: the document has an opaque origin; it can't touch the parent
  *    `window.api` even if a script somehow slipped through.
  *  - CSP + DOMPurify inside `buildSanitizedEmailDocument` do the rest.
@@ -974,24 +1088,56 @@ function MessageReader({
 function SandboxedHtmlFrame({
   html,
   attachments,
-  loadRemoteImages
+  loadRemoteImages,
+  onShortcut
 }: {
   html: string
   attachments: MessageWithBody['inlineAttachments']
   loadRemoteImages: boolean
+  onShortcut?: ((shortcut: ReaderShortcut) => void) | null
 }): React.JSX.Element {
   const { resolved: theme } = useTheme()
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
   const srcDoc = useMemo(
     () => buildSanitizedEmailDocument(html, attachments, { loadRemoteImages, theme }),
     [html, attachments, loadRemoteImages, theme]
   )
 
+  useEffect(() => {
+    if (!onShortcut) return
+    const shortcutHandler = onShortcut
+    function onMessage(event: MessageEvent): void {
+      if (event.source !== frameRef.current?.contentWindow) return
+      if (
+        !event.data ||
+        typeof event.data !== 'object' ||
+        event.data.type !== 'mail-samurai:email-shortcut' ||
+        typeof event.data.key !== 'string'
+      ) {
+        return
+      }
+      const key = event.data.key.toLowerCase()
+      if (key === 'e') {
+        shortcutHandler(event.data.shiftKey ? 'unarchive' : 'archive')
+      } else if (key === 'r') {
+        shortcutHandler('replyAll')
+      } else if (key === 'f') {
+        shortcutHandler('forward')
+      } else if (key === 'i') {
+        shortcutHandler('replyAllWithAi')
+      }
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [onShortcut])
+
   return (
     <iframe
+      ref={frameRef}
       title="Email body"
-      // No allow-scripts. allow-popups lets <a target="_blank"> open via
-      // main's setWindowOpenHandler → shell.openExternal.
-      sandbox="allow-popups allow-popups-to-escape-sandbox"
+      // Scripts run in an opaque origin with a CSP nonce that only whitelists
+      // our shortcut bridge. Popups still route externally via main.
+      sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
       srcDoc={srcDoc}
       className="block h-full w-full border-0 bg-transparent"
       style={{ colorScheme: theme }}

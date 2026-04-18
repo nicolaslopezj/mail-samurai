@@ -25,6 +25,7 @@
 import type {
   Category,
   CategoryAction,
+  CategoryCountMode,
   CloudConfig,
   CloudCredentials,
   SummaryLanguage
@@ -105,6 +106,8 @@ export async function connectCloud(creds: CloudCredentials): Promise<CloudConfig
     if (local.categories.length > 0) await pushCategories(db, local.categories, now)
     await pushKv(db, KV_KEYS.uncategorizedAction, local.uncategorizedAction, now)
     await pushKv(db, KV_KEYS.summaryLanguage, local.summaryLanguage, now)
+    await pushKv(db, KV_KEYS.allowUncategorized, local.allowUncategorized, now)
+    await pushKv(db, KV_KEYS.uncategorizedCountMode, local.uncategorizedCountMode, now)
   } catch (err) {
     console.error('[cloud] connect: snapshot push failed:', err)
   }
@@ -306,19 +309,17 @@ async function mergeCategoriesFromCloud(db: LibsqlCredentials): Promise<void> {
   if (remote.length === 0) return
 
   const local = await getUiSettings()
-  const localById = new Map(local.categories.map((c) => [c.id, c]))
   const seen = new Set<string>()
   const merged: Category[] = []
 
-  // Respect cloud ordering so all devices converge to the same sort.
+  // Respect cloud ordering and cloud definition content — pushCategories
+  // enforces LWW on the server, so the rows we see are the winning version.
+  // Letting local win here would silently drop field edits (countMode, icon,
+  // instructions, action) made on other devices.
   for (const row of remote) {
     if (row.deletedAt) continue
     seen.add(row.category.id)
-    // If both sides have this id, prefer the local one only when local
-    // doesn't match remote exactly — remote wins on definition content,
-    // local just contributes ordering if a newer edit is in flight.
-    const localCat = localById.get(row.category.id)
-    merged.push(localCat ?? row.category)
+    merged.push(row.category)
   }
   // Keep locally-only categories at the end; they'll get pushed up by the
   // caller's own writes later.
@@ -329,14 +330,29 @@ async function mergeCategoriesFromCloud(db: LibsqlCredentials): Promise<void> {
   // Avoid a write (and a subsequent push back to cloud) when nothing changed.
   if (sameCategoryList(local.categories, merged)) return
 
-  await storeSetCategories(merged, local.uncategorizedAction)
+  await storeSetCategories(
+    merged,
+    local.uncategorizedAction,
+    local.allowUncategorized,
+    local.uncategorizedCountMode
+  )
 }
 
 function sameCategoryList(a: Category[], b: Category[]): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id) return false
-    if (a[i].name !== b[i].name) return false
+    const x = a[i]
+    const y = b[i]
+    if (
+      x.id !== y.id ||
+      x.name !== y.name ||
+      x.instructions !== y.instructions ||
+      x.icon !== y.icon ||
+      x.countMode !== y.countMode ||
+      JSON.stringify(x.action) !== JSON.stringify(y.action)
+    ) {
+      return false
+    }
   }
   return true
 }
@@ -357,9 +373,46 @@ async function mergeKvFromCloud(db: LibsqlCredentials): Promise<void> {
     const remote = await pullKv<CategoryAction>(db, KV_KEYS.uncategorizedAction)
     if (remote) {
       const fresh = await getUiSettings()
-      await storeSetCategories(fresh.categories, remote.value)
+      await storeSetCategories(
+        fresh.categories,
+        remote.value,
+        fresh.allowUncategorized,
+        fresh.uncategorizedCountMode
+      )
     }
   } catch (err) {
     console.error('[cloud] kv/uncategorizedAction merge failed:', err)
+  }
+
+  try {
+    const remote = await pullKv<boolean>(db, KV_KEYS.allowUncategorized)
+    if (remote) {
+      const fresh = await getUiSettings()
+      await storeSetCategories(
+        fresh.categories,
+        fresh.uncategorizedAction,
+        remote.value,
+        fresh.uncategorizedCountMode
+      )
+    }
+  } catch (err) {
+    console.error('[cloud] kv/allowUncategorized merge failed:', err)
+  }
+
+  try {
+    const remote = await pullKv<CategoryCountMode>(db, KV_KEYS.uncategorizedCountMode)
+    if (remote) {
+      const fresh = await getUiSettings()
+      if (remote.value !== fresh.uncategorizedCountMode) {
+        await storeSetCategories(
+          fresh.categories,
+          fresh.uncategorizedAction,
+          fresh.allowUncategorized,
+          remote.value
+        )
+      }
+    }
+  } catch (err) {
+    console.error('[cloud] kv/uncategorizedCountMode merge failed:', err)
   }
 }

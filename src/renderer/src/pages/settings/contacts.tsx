@@ -99,8 +99,7 @@ export function SettingsContactsPage(): React.JSX.Element {
           <div className="mt-4 flex flex-col gap-2">
             <p className="text-xs text-muted-foreground">
               Mail Samurai will ask macOS for permission. Once granted, names from your address book
-              override whatever shows up in email headers — so your wife stays your wife, not
-              &ldquo;Mamá de Jerónimo&rdquo; because a random sender labeled her that.
+              override whatever shows up in email headers.
             </p>
             <Button onClick={handleConnect} disabled={action === 'loading'} className="w-fit">
               {action === 'loading' ? <Loader2Icon className="animate-spin" /> : <UsersIcon />}

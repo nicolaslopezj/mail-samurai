@@ -1,7 +1,9 @@
 import {
   type Account,
   accountDisplayName,
+  CATEGORY_COUNT_MODE_DEFAULT,
   type Category,
+  type CategoryCountMode,
   type MessageCounts
 } from '@shared/settings'
 import {
@@ -38,6 +40,7 @@ const EMPTY_COUNTS: MessageCounts = {
   categoryUnread: {},
   categoryTotal: {},
   otherUnread: 0,
+  otherTotal: 0,
   archiveUnread: {},
   archiveUnreadTotal: 0
 }
@@ -51,6 +54,10 @@ export function AppSidebar(): React.JSX.Element {
   const location = useLocation()
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [allowUncategorized, setAllowUncategorized] = useState(true)
+  const [uncategorizedCountMode, setUncategorizedCountMode] = useState<CategoryCountMode>(
+    CATEGORY_COUNT_MODE_DEFAULT
+  )
   const [counts, setCounts] = useState<MessageCounts>(EMPTY_COUNTS)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
@@ -94,7 +101,11 @@ export function AppSidebar(): React.JSX.Element {
   useEffect(() => {
     let cancelled = false
     window.api.settings.get().then((s) => {
-      if (!cancelled) setCategories(s.categories)
+      if (!cancelled) {
+        setCategories(s.categories)
+        setAllowUncategorized(s.allowUncategorized)
+        setUncategorizedCountMode(s.uncategorizedCountMode)
+      }
     })
     return () => {
       cancelled = true
@@ -204,19 +215,25 @@ export function AppSidebar(): React.JSX.Element {
                     </SidebarMenuItem>
                   )
                 })}
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    asChild
-                    className="no-drag"
-                    isActive={location.pathname === '/others'}
-                  >
-                    <Link to="/others">
-                      <TagIcon />
-                      <span>Other</span>
-                    </Link>
-                  </SidebarMenuButton>
-                  <CountBadge count={counts.otherUnread} />
-                </SidebarMenuItem>
+                {allowUncategorized && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      className="no-drag"
+                      isActive={location.pathname === '/others'}
+                    >
+                      <Link to="/others">
+                        <TagIcon />
+                        <span>Other</span>
+                      </Link>
+                    </SidebarMenuButton>
+                    <CountBadge
+                      count={
+                        uncategorizedCountMode === 'total' ? counts.otherTotal : counts.otherUnread
+                      }
+                    />
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

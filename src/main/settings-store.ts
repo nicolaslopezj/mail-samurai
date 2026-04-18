@@ -8,7 +8,6 @@ import {
   CATEGORY_COUNT_MODE_DEFAULT,
   CATEGORY_COUNT_MODES,
   CATEGORY_ICON_DEFAULT,
-  CATEGORY_ICONS,
   type Category,
   type CategoryAction,
   type CategoryCountMode,
@@ -48,7 +47,9 @@ type PersistedSettings = {
   pollIntervalMinutes: number
   loadRemoteImages: boolean
   categories: Category[]
+  allowUncategorized: boolean
   uncategorizedAction: CategoryAction
+  uncategorizedCountMode: CategoryCountMode
   theme: ThemePreference
   summaryLanguage: SummaryLanguage
   cloud: PersistedCloud
@@ -96,7 +97,9 @@ function makeInitialSettings(): PersistedSettings {
     pollIntervalMinutes: POLL_DEFAULT_MINUTES,
     loadRemoteImages: LOAD_REMOTE_IMAGES_DEFAULT,
     categories: [],
+    allowUncategorized: true,
     uncategorizedAction: { kind: 'none' },
+    uncategorizedCountMode: CATEGORY_COUNT_MODE_DEFAULT,
     theme: THEME_DEFAULT,
     summaryLanguage: SUMMARY_LANGUAGE_DEFAULT,
     cloud: emptyCloud(),
@@ -173,9 +176,9 @@ function sanitizeAction(value: unknown): CategoryAction {
 }
 
 function sanitizeIcon(value: unknown): CategoryIcon {
-  return typeof value === 'string' && (CATEGORY_ICONS as readonly string[]).includes(value)
-    ? (value as CategoryIcon)
-    : CATEGORY_ICON_DEFAULT
+  if (typeof value !== 'string') return CATEGORY_ICON_DEFAULT
+  const trimmed = value.trim()
+  return /^[A-Z][A-Za-z0-9]{0,63}$/.test(trimmed) ? trimmed : CATEGORY_ICON_DEFAULT
 }
 
 function sanitizeCountMode(value: unknown): CategoryCountMode {
@@ -223,7 +226,10 @@ async function read(): Promise<PersistedSettings> {
           ? parsed.loadRemoteImages
           : LOAD_REMOTE_IMAGES_DEFAULT,
       categories: sanitizeCategories(parsed.categories),
+      allowUncategorized:
+        typeof parsed.allowUncategorized === 'boolean' ? parsed.allowUncategorized : true,
       uncategorizedAction: sanitizeAction(parsed.uncategorizedAction),
+      uncategorizedCountMode: sanitizeCountMode(parsed.uncategorizedCountMode),
       theme: sanitizeTheme(parsed.theme),
       summaryLanguage: sanitizeSummaryLanguage(parsed.summaryLanguage),
       cloud: sanitizeCloud(parsed.cloud),
@@ -268,7 +274,9 @@ function toUi(settings: PersistedSettings): UiSettings {
     pollIntervalMinutes: settings.pollIntervalMinutes,
     loadRemoteImages: settings.loadRemoteImages,
     categories: settings.categories,
+    allowUncategorized: settings.allowUncategorized,
     uncategorizedAction: settings.uncategorizedAction,
+    uncategorizedCountMode: settings.uncategorizedCountMode,
     theme: settings.theme,
     summaryLanguage: settings.summaryLanguage,
     cloud: toCloudUi(settings.cloud),
@@ -356,13 +364,17 @@ export async function setLoadRemoteImages(enabled: boolean): Promise<UiSettings>
 
 export async function setCategories(
   categories: Category[],
-  uncategorizedAction: CategoryAction
+  uncategorizedAction: CategoryAction,
+  allowUncategorized: boolean,
+  uncategorizedCountMode: CategoryCountMode
 ): Promise<UiSettings> {
   const current = await read()
   const next: PersistedSettings = {
     ...current,
     categories: sanitizeCategories(categories),
-    uncategorizedAction: sanitizeAction(uncategorizedAction)
+    allowUncategorized: Boolean(allowUncategorized),
+    uncategorizedAction: sanitizeAction(uncategorizedAction),
+    uncategorizedCountMode: sanitizeCountMode(uncategorizedCountMode)
   }
   await write(next)
   return toUi(next)

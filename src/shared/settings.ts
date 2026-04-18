@@ -88,46 +88,11 @@ export const CATEGORY_ACTIONS: { value: CategoryActionKind; label: string; hint:
 ]
 
 /**
- * Names of the lucide-react icons the user can pick for a category. Stored as
- * strings so both the main process (sanitization) and the renderer (icon
- * component lookup) stay decoupled from the icon library import.
+ * PascalCase name of any lucide-react icon. Stored as a plain string so the
+ * main process can sanitize it without pulling in the icon library — the
+ * renderer resolves the name to a component dynamically.
  */
-export const CATEGORY_ICONS = [
-  'Tag',
-  'Mail',
-  'Inbox',
-  'Receipt',
-  'ShoppingCart',
-  'Package',
-  'Newspaper',
-  'Bell',
-  'Megaphone',
-  'Star',
-  'Heart',
-  'Bookmark',
-  'Flag',
-  'Briefcase',
-  'Building2',
-  'Users',
-  'FileText',
-  'Folder',
-  'CreditCard',
-  'DollarSign',
-  'Gift',
-  'Calendar',
-  'Clock',
-  'Paperclip',
-  'Lock',
-  'Shield',
-  'Zap',
-  'Sparkles',
-  'Code',
-  'Globe',
-  'Home',
-  'AlertCircle'
-] as const
-
-export type CategoryIcon = (typeof CATEGORY_ICONS)[number]
+export type CategoryIcon = string
 
 export const CATEGORY_ICON_DEFAULT: CategoryIcon = 'Tag'
 
@@ -179,8 +144,12 @@ export type UiSettings = {
    */
   loadRemoteImages: boolean
   categories: Category[]
+  /** Whether the AI may leave a message without any category match (`none`). */
+  allowUncategorized: boolean
   /** Action applied when a message doesn't match any category. */
   uncategorizedAction: CategoryAction
+  /** Whether the "Other" sidebar badge counts unread-only or every non-archived message. */
+  uncategorizedCountMode: CategoryCountMode
   /** UI color scheme preference. `system` follows the OS setting. */
   theme: ThemePreference
   /** Language used for AI-generated summaries (`auto` = detect per email). */
@@ -272,7 +241,9 @@ export type SettingsApi = {
   setLoadRemoteImages: (enabled: boolean) => Promise<UiSettings>
   setCategories: (
     categories: Category[],
-    uncategorizedAction: CategoryAction
+    uncategorizedAction: CategoryAction,
+    allowUncategorized: boolean,
+    uncategorizedCountMode: CategoryCountMode
   ) => Promise<UiSettings>
   /** Persist a new category order. Ids not present are kept at the end. */
   reorderCategories: (orderedIds: string[]) => Promise<UiSettings>
@@ -465,6 +436,8 @@ export type MessageCounts = {
   categoryTotal: Record<string, number>
   /** unread messages categorized as "other" (AI reviewed, no match). */
   otherUnread: number
+  /** total non-archived messages categorized as "other" (read + unread). */
+  otherTotal: number
   /** unread archived messages, keyed by account id. */
   archiveUnread: Record<string, number>
   /** unread archived messages across all accounts. */
@@ -662,11 +635,25 @@ export type AppInfo = {
   author: string
 }
 
+/**
+ * Result of an `app.exportLogs` call. `saved` is false when the user cancels
+ * the save dialog; otherwise `path` points at the file that was written.
+ */
+export type ExportLogsResult = {
+  saved: boolean
+  path?: string
+}
+
 export type AppApi = {
   info: () => Promise<AppInfo>
   getUpdateState: () => Promise<UpdateState>
   checkForUpdates: () => Promise<UpdateState>
   /** Open an external URL in the user's default browser. */
   openExternal: (url: string) => Promise<void>
+  /**
+   * Bundle the app's log files with version + device info and prompt the user
+   * to save it. Reveals the saved file in Finder on success.
+   */
+  exportLogs: () => Promise<ExportLogsResult>
   onUpdateState: (handler: (state: UpdateState) => void) => () => void
 }

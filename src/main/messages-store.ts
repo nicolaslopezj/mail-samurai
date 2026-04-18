@@ -121,6 +121,14 @@ export function getCounts(): MessageCounts {
     )
     .get() as { n: number }
   const otherUnread = otherRow.n
+  const otherTotalRow = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM messages
+       WHERE category_id IS NULL AND categorized_at IS NOT NULL
+         AND archived_at_ms IS NULL`
+    )
+    .get() as { n: number }
+  const otherTotal = otherTotalRow.n
   const archiveUnread: Record<string, number> = {}
   let archiveUnreadTotal = 0
   const archiveRows = db
@@ -140,6 +148,7 @@ export function getCounts(): MessageCounts {
     categoryUnread,
     categoryTotal,
     otherUnread,
+    otherTotal,
     archiveUnread,
     archiveUnreadTotal
   }

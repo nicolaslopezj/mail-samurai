@@ -26,3 +26,13 @@ release
 
 # Code-signing assets and release env (NEVER commit)
 .signing/
+
+# Native addon build artifacts
+native/**/build/
+native/**/prebuilds/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Claude Code runtime lockfile
+.claude/scheduled_tasks.lock

@@ -14,6 +14,7 @@ import type {
   CategorizationResult,
   Category,
   CategoryAction,
+  CategoryCountMode,
   CloudApi,
   CloudConfig,
   CloudCredentials,
@@ -21,6 +22,7 @@ import type {
   ContactsApi,
   ContactsQuery,
   EmailDraft,
+  ExportLogsResult,
   MacContactsImportResult,
   MacContactsState,
   MacContactsStatus,
@@ -51,11 +53,18 @@ const settings: SettingsApi = {
     ipcRenderer.invoke('settings:setPollIntervalMinutes', minutes) as Promise<UiSettings>,
   setLoadRemoteImages: (enabled: boolean) =>
     ipcRenderer.invoke('settings:setLoadRemoteImages', enabled) as Promise<UiSettings>,
-  setCategories: (categories: Category[], uncategorizedAction: CategoryAction) =>
+  setCategories: (
+    categories: Category[],
+    uncategorizedAction: CategoryAction,
+    allowUncategorized: boolean,
+    uncategorizedCountMode: CategoryCountMode
+  ) =>
     ipcRenderer.invoke(
       'settings:setCategories',
       categories,
-      uncategorizedAction
+      uncategorizedAction,
+      allowUncategorized,
+      uncategorizedCountMode
     ) as Promise<UiSettings>,
   reorderCategories: (orderedIds: string[]) =>
     ipcRenderer.invoke('settings:reorderCategories', orderedIds) as Promise<UiSettings>,
@@ -139,6 +148,7 @@ const appApi: AppApi = {
   getUpdateState: () => ipcRenderer.invoke('app:getUpdateState') as Promise<UpdateState>,
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates') as Promise<UpdateState>,
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url) as Promise<void>,
+  exportLogs: () => ipcRenderer.invoke('app:exportLogs') as Promise<ExportLogsResult>,
   onUpdateState: (handler: (state: UpdateState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: UpdateState): void => handler(state)
     ipcRenderer.on('app:updateState', listener)

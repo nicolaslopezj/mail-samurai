@@ -166,8 +166,8 @@ export function searchContacts(params: {
   }
   if (pattern) {
     // Filter against the *effective* name (Mac first, then derived) so a
-    // search for "Francisca" still hits an address whose derived name is
-    // "Mamá de Jerónimo" but whose Mac name is "Francisca Infante".
+    // search for "Paz" still hits an address whose derived name is
+    // "Mamá de XX" but whose Mac name is "Paz Godoy".
     derivedWhere.push(
       `(c.address LIKE ? ESCAPE '\\' ` +
         `OR lower(COALESCE(m.display_name, c.display_name)) LIKE ? ESCAPE '\\')`

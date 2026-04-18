@@ -9,10 +9,12 @@ import {
   TagsIcon,
   UsersIcon
 } from 'lucide-react'
-import { Link, NavLink, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+
+const WIDE_ROUTES = new Set(['/settings/categories'])
 
 type NavItem = {
   to: string
@@ -32,6 +34,8 @@ const NAV: NavItem[] = [
 ]
 
 export function SettingsLayout(): React.JSX.Element {
+  const location = useLocation()
+  const wide = WIDE_ROUTES.has(location.pathname)
   return (
     <div className="flex h-svh flex-col">
       <header className="drag flex h-11 shrink-0 items-center gap-2 border-b pr-3 pl-20">
@@ -72,7 +76,7 @@ export function SettingsLayout(): React.JSX.Element {
         </nav>
 
         <div className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-xl px-6 py-8">
+          <div className={cn('mx-auto w-full px-6 py-8', wide ? 'max-w-5xl' : 'max-w-xl')}>
             <Outlet />
           </div>
         </div>

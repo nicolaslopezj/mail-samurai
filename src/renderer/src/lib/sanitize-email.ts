@@ -1,6 +1,8 @@
 import type { InlineAttachment } from '@shared/settings'
 import DOMPurify from 'dompurify'
 
+const EMAIL_SHORTCUT_SCRIPT_NONCE = 'mail-samurai-email-shortcuts'
+
 /**
  * Turn a stored message's HTML body into a self-contained HTML document that
  * is safe to drop into an `<iframe sandbox srcdoc="...">`. We rely on THREE
@@ -10,12 +12,15 @@ import DOMPurify from 'dompurify'
  *     any `javascript:` / `vbscript:` URLs from href/src/style.
  *  2. A strict `<meta http-equiv="Content-Security-Policy">` blocks remote
  *     requests entirely — no tracking pixels, no remote fonts, no XHR. Only
- *     inline styles and `data:` images (for inlined `cid:` parts) are allowed.
- *  3. The caller renders the result inside an iframe with `sandbox="allow-popups
- *     allow-popups-to-escape-sandbox"` — no scripts, no same-origin, no form
- *     submission. `<base target="_blank">` below promotes link clicks to
- *     window-open events, which Electron's `setWindowOpenHandler` routes to
- *     the system browser.
+ *     inline styles, `data:` images, and one nonce-pinned helper script are
+ *     allowed.
+ *  3. The caller renders the result inside an iframe with
+ *     `sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"`:
+ *     unique origin, no form submission, no top-nav. The only script that can
+ *     run is the helper we inject below so keyboard shortcuts still work while
+ *     focus is inside the email body. `<base target="_blank">` promotes link
+ *     clicks to window-open events, which Electron's `setWindowOpenHandler`
+ *     routes to the system browser.
  *
  * We also rewrite `cid:<content-id>` image refs to `data:<mime>;base64,...`
  * using the inline attachments that `messages.get` returned.
@@ -49,9 +54,9 @@ function emailDeclaresOwnBackground(body: HTMLElement): boolean {
     const el = queue.shift()
     if (!el) break
     const bgcolor = el.getAttribute('bgcolor')
-    if (bgcolor && bgcolor.trim()) return true
+    if (bgcolor?.trim()) return true
     const background = el.getAttribute('background')
-    if (background && background.trim()) return true
+    if (background?.trim()) return true
     const style = el.getAttribute('style') ?? ''
     if (/background(?:-color|-image)?\s*:/i.test(style)) return true
     // Only the first couple of wrapper layers — we don't want a styled button
@@ -132,9 +137,10 @@ export function buildSanitizedEmailDocument(
   const useDark = options.theme === 'dark' && !declaresOwnBackground
   const innerHtml = doc.body.innerHTML
 
-  // Strict CSP: no scripts, no remote scripts/styles/fonts. `style-src
-  // 'unsafe-inline'` is required because email relies on inline styles — this
-  // only allows inline style attributes, not script execution.
+  // Strict CSP: no remote scripts/styles/fonts. `style-src 'unsafe-inline'`
+  // is required because email relies on inline styles. The only script we
+  // allow is a nonce-pinned helper that forwards a few keyboard shortcuts to
+  // the parent app while focus is inside the sandboxed iframe.
   // Remote images (http/https) are gated by the user-facing
   // `loadRemoteImages` setting because they double as tracking pixels.
   const imgSrc = options.loadRemoteImages ? 'img-src data: https: http:' : 'img-src data:'
@@ -142,6 +148,7 @@ export function buildSanitizedEmailDocument(
     "default-src 'none'",
     imgSrc,
     "style-src 'unsafe-inline'",
+    `script-src 'nonce-${EMAIL_SHORTCUT_SCRIPT_NONCE}'`,
     'font-src data:',
     'media-src data:',
     "form-action 'none'",
@@ -156,6 +163,22 @@ export function buildSanitizedEmailDocument(
   // more would double-indent them. Plain replies / bare HTML get none, so
   // the text runs edge-to-edge; give those some breathing room.
   const bodyPadding = declaresOwnBackground ? '0 4px' : '8px 16px'
+  const shortcutScript = `
+window.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented) return
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  const key = event.key.toLowerCase()
+  if (key !== 'e' && key !== 'r' && key !== 'f' && key !== 'i') return
+  parent.postMessage(
+    {
+      type: 'mail-samurai:email-shortcut',
+      key,
+      shiftKey: event.shiftKey
+    },
+    '*'
+  )
+})
+  `.trim()
 
   return `<!doctype html>
 <html>
@@ -179,6 +202,7 @@ export function buildSanitizedEmailDocument(
       img { max-width: 100%; height: auto; }
       a { color: ${linkColor}; }
     </style>
+    <script nonce="${EMAIL_SHORTCUT_SCRIPT_NONCE}">${shortcutScript}</script>
   </head>
   <body>${innerHtml}</body>
 </html>`

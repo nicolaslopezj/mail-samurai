@@ -64,6 +64,7 @@ export async function categorizePendingMessages(): Promise<void> {
         const result = await categorizeMessage(
           message,
           settings.categories,
+          settings.allowUncategorized,
           settings.aiProvider,
           settings.aiModel,
           apiKey,

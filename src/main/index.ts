@@ -7,6 +7,7 @@ import { startAutoUpdater } from './auto-updater'
 import { backfillFromMessages, isEmpty as contactsEmpty } from './contacts-store'
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
+import { initLogger } from './logger'
 import { initSettings } from './settings-store'
 import { startScheduler, stopScheduler } from './sync-scheduler'
 
@@ -37,6 +38,8 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+initLogger()
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.nicolaslopezj.mail-samurai')

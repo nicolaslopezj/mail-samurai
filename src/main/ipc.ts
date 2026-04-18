@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { app, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type {
   AccountDraft,
   AiDraftReplyRequest,
@@ -9,9 +10,11 @@ import type {
   AppInfo,
   Category,
   CategoryAction,
+  CategoryCountMode,
   CloudCredentials,
   ContactsQuery,
   EmailDraft,
+  ExportLogsResult,
   MessagesQuery,
   SummaryLanguage,
   ThemePreference
@@ -34,6 +37,7 @@ import {
 import * as contacts from './contacts-store'
 import { archiveMessage, setMessageSeen, unarchiveMessage } from './imap-sync'
 import { testImapAuth } from './imap-test'
+import { getLogFilePath, readLogFiles } from './logger'
 import * as macContacts from './mac-contacts'
 import * as messages from './messages-store'
 import { KV_KEYS } from './overlay-store'
@@ -62,6 +66,53 @@ function readPackageVersion(): string {
   return app.getVersion()
 }
 
+async function buildLogBundle(): Promise<string> {
+  const version = readPackageVersion()
+  const settings = await store.getUiSettings().catch(() => null)
+  const accountList = await accounts.list().catch(() => [])
+  const providerCounts = accountList.reduce<Record<string, number>>((acc, a) => {
+    acc[a.provider] = (acc[a.provider] ?? 0) + 1
+    return acc
+  }, {})
+  const lines: string[] = []
+  lines.push('Mail Samurai — log export')
+  lines.push(`Generated: ${new Date().toISOString()}`)
+  lines.push('')
+  lines.push('## App')
+  lines.push(`Version: ${version}`)
+  lines.push(`Packaged: ${app.isPackaged}`)
+  lines.push(`Locale: ${app.getLocale()}`)
+  lines.push('')
+  lines.push('## System')
+  lines.push(`Platform: ${process.platform} (${process.arch})`)
+  lines.push(`OS release: ${process.getSystemVersion?.() ?? 'n/a'}`)
+  lines.push(`Electron: ${process.versions.electron}`)
+  lines.push(`Chrome: ${process.versions.chrome}`)
+  lines.push(`Node: ${process.versions.node}`)
+  lines.push(`V8: ${process.versions.v8}`)
+  lines.push('')
+  lines.push('## Configuration')
+  lines.push(`Accounts: ${accountList.length} (${JSON.stringify(providerCounts)})`)
+  if (settings) {
+    lines.push(`AI provider: ${settings.aiProvider ?? 'none'}`)
+    lines.push(`AI model: ${settings.aiModel ?? 'none'}`)
+    lines.push(`Poll interval (min): ${settings.pollIntervalMinutes}`)
+    lines.push(`Summary language: ${settings.summaryLanguage}`)
+    lines.push(`Theme: ${settings.theme}`)
+    lines.push(`Load remote images: ${settings.loadRemoteImages}`)
+    lines.push(`Cloud sync: ${settings.cloud.enabled ? 'enabled' : 'disabled'}`)
+    lines.push(`Categories: ${settings.categories.length}`)
+  }
+  lines.push('')
+  lines.push(`Log file: ${getLogFilePath()}`)
+  lines.push('')
+  lines.push('---')
+  lines.push('')
+  const logs = await readLogFiles()
+  lines.push(logs || '(no log output captured yet)')
+  return lines.join('\n')
+}
+
 export function registerIpcHandlers(): void {
   // App metadata / updates
   ipcMain.handle(
@@ -78,6 +129,22 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('app:openExternal', (_event, url: string) => {
     if (!/^https?:\/\//i.test(url)) throw new Error('Refusing to open non-http URL')
     return shell.openExternal(url)
+  })
+
+  ipcMain.handle('app:exportLogs', async (): Promise<ExportLogsResult> => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const defaultPath = join(app.getPath('downloads'), `mail-samurai-logs-${stamp}.txt`)
+    const result = await dialog.showSaveDialog(win ?? undefined, {
+      title: 'Export Mail Samurai logs',
+      defaultPath,
+      filters: [{ name: 'Log file', extensions: ['txt', 'log'] }]
+    })
+    if (result.canceled || !result.filePath) return { saved: false }
+    const bundle = await buildLogBundle()
+    await writeFile(result.filePath, bundle, 'utf8')
+    shell.showItemInFolder(result.filePath)
+    return { saved: true, path: result.filePath }
   })
 
   // AI / general settings
@@ -117,12 +184,25 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'settings:setCategories',
-    async (_event, categories: Category[], uncategorizedAction: CategoryAction) => {
-      const next = await store.setCategories(categories, uncategorizedAction)
+    async (
+      _event,
+      categories: Category[],
+      uncategorizedAction: CategoryAction,
+      allowUncategorized: boolean,
+      uncategorizedCountMode: CategoryCountMode
+    ) => {
+      const next = await store.setCategories(
+        categories,
+        uncategorizedAction,
+        allowUncategorized,
+        uncategorizedCountMode
+      )
       // Fire-and-forget upload so other devices pick up the change on their
       // next pull. The helper is a no-op when the user isn't connected.
       pushCategoriesIfConnected(next.categories).catch(() => {})
       pushKvIfConnected(KV_KEYS.uncategorizedAction, next.uncategorizedAction).catch(() => {})
+      pushKvIfConnected(KV_KEYS.allowUncategorized, next.allowUncategorized).catch(() => {})
+      pushKvIfConnected(KV_KEYS.uncategorizedCountMode, next.uncategorizedCountMode).catch(() => {})
       return next
     }
   )
@@ -363,6 +443,7 @@ export function registerIpcHandlers(): void {
     const result = await categorizeMessage(
       message,
       settings.categories,
+      settings.allowUncategorized,
       settings.aiProvider,
       settings.aiModel,
       apiKey,

@@ -2,6 +2,7 @@ import type { AppInfo, UpdateState } from '@shared/settings'
 import {
   DownloadIcon,
   ExternalLinkIcon,
+  FileTextIcon,
   GithubIcon,
   Loader2Icon,
   RefreshCwIcon
@@ -44,6 +45,8 @@ export function SettingsAboutPage(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' })
   const [manualError, setManualError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportStatus, setExportStatus] = useState<string | null>(null)
 
   useEffect(() => {
     window.api.app.info().then(setInfo)
@@ -71,6 +74,21 @@ export function SettingsAboutPage(): React.JSX.Element {
     window.api.app.openExternal(url).catch(() => {
       // Ignore — nothing actionable for the user.
     })
+  }
+
+  async function handleExportLogs(): Promise<void> {
+    setExportStatus(null)
+    setExporting(true)
+    try {
+      const result = await window.api.app.exportLogs()
+      if (result.saved) {
+        setExportStatus('Logs saved. Attach the file to your GitHub issue.')
+      }
+    } catch (err) {
+      setExportStatus(`Couldn't export logs: ${ipcErrorMessage(err)}`)
+    } finally {
+      setExporting(false)
+    }
   }
 
   const homepage = info?.homepage ?? 'https://github.com/nicolaslopezj/mail-samurai'
@@ -121,6 +139,24 @@ export function SettingsAboutPage(): React.JSX.Element {
         </div>
         {status && <p className="text-xs text-muted-foreground">{status}</p>}
         {manualError && <p className="text-xs text-destructive">{manualError}</p>}
+      </div>
+
+      <div className="space-y-2">
+        <div className="text-sm font-medium">Troubleshooting</div>
+        <p className="text-xs text-muted-foreground">
+          Export a log bundle with version and device info to attach to a GitHub issue.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleExportLogs}
+          disabled={exporting}
+        >
+          {exporting ? <Loader2Icon className="animate-spin" /> : <FileTextIcon />}
+          Export logs
+        </Button>
+        {exportStatus && <p className="text-xs text-muted-foreground">{exportStatus}</p>}
       </div>
     </section>
   )

@@ -3,19 +3,19 @@ import {
   CATEGORY_COUNT_MODE_DEFAULT,
   CATEGORY_COUNT_MODES,
   CATEGORY_ICON_DEFAULT,
-  CATEGORY_ICONS,
   type Category,
   type CategoryAction,
   type CategoryActionKind,
   type CategoryCountMode,
   type UiSettings
 } from '@shared/settings'
-import { CheckIcon, Loader2Icon, PlusIcon, Trash2Icon } from 'lucide-react'
+import { CheckIcon, ChevronDownIcon, Loader2Icon, PlusIcon, Trash2Icon } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -24,9 +24,91 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { categoryIconComponent } from '@/lib/category-icon'
+import { ALL_CATEGORY_ICONS, categoryIconComponent } from '@/lib/category-icon'
 import { ipcErrorMessage } from '@/lib/ipc-error'
 import { cn } from '@/lib/utils'
+
+function IconPicker({
+  value,
+  onChange,
+  ariaLabel
+}: {
+  value: string
+  onChange: (name: string) => void
+  ariaLabel?: string
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const Current = categoryIconComponent(value)
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return ALL_CATEGORY_ICONS
+    return ALL_CATEGORY_ICONS.filter((e) => e.name.toLowerCase().includes(q))
+  }, [query])
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setQuery('')
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          aria-label={ariaLabel ?? 'Pick icon'}
+          className="shrink-0"
+        >
+          <Current className="size-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-2" align="start">
+        <Input
+          placeholder="Search icons…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="mb-2 h-8"
+          autoFocus
+        />
+        <div className="grid max-h-64 grid-cols-8 gap-1 overflow-y-auto">
+          {filtered.slice(0, 400).map((entry) => {
+            const selected = entry.name === value
+            const Icon = entry.Component
+            return (
+              <button
+                key={entry.name}
+                type="button"
+                title={entry.name}
+                onClick={() => {
+                  onChange(entry.name)
+                  setOpen(false)
+                }}
+                className={cn(
+                  'flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground',
+                  selected && 'bg-accent text-foreground ring-2 ring-ring'
+                )}
+              >
+                <Icon className="size-4" />
+              </button>
+            )
+          })}
+        </div>
+        {filtered.length === 0 && (
+          <p className="p-2 text-center text-xs text-muted-foreground">No icons match.</p>
+        )}
+        {filtered.length > 400 && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Showing first 400 of {filtered.length}. Keep typing to narrow.
+          </p>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 function AutoTextarea(props: React.ComponentProps<typeof Textarea>): React.JSX.Element {
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -108,21 +190,44 @@ function actionHint(kind: CategoryActionKind): string {
   return CATEGORY_ACTIONS.find((a) => a.value === kind)?.hint ?? ''
 }
 
+function actionSummary(action: CategoryAction): string {
+  const base = CATEGORY_ACTIONS.find((a) => a.value === action.kind)?.label ?? ''
+  if (action.kind === 'moveToFolder') return action.folder ? `Move to "${action.folder}"` : base
+  if (action.kind === 'runCommand') return action.command ? `Run: ${action.command}` : base
+  return base
+}
+
 export function SettingsCategoriesPage(): React.JSX.Element {
   const [settings, setSettings] = useState<UiSettings | null>(null)
   const [drafts, setDrafts] = useState<DraftCategory[]>([])
+  const [allowUncategorized, setAllowUncategorized] = useState(true)
   const [uncategorized, setUncategorized] = useState<CategoryAction>({ kind: 'none' })
+  const [uncategorizedCountMode, setUncategorizedCountMode] = useState<CategoryCountMode>(
+    CATEGORY_COUNT_MODE_DEFAULT
+  )
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     window.api.settings.get().then((current) => {
       setSettings(current)
       setDrafts(current.categories)
+      setAllowUncategorized(current.allowUncategorized)
       setUncategorized(current.uncategorizedAction)
+      setUncategorizedCountMode(current.uncategorizedCountMode)
     })
   }, [])
+
+  function toggleExpanded(id: string): void {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   function updateDraft(id: string, patch: Partial<DraftCategory>): void {
     setDrafts((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
@@ -147,11 +252,23 @@ export function SettingsCategoriesPage(): React.JSX.Element {
   }
 
   function addDraft(): void {
-    setDrafts((prev) => [...prev, newCategory()])
+    const draft = newCategory()
+    setDrafts((prev) => [...prev, draft])
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      next.add(draft.id)
+      return next
+    })
   }
 
   function removeDraft(id: string): void {
     setDrafts((prev) => prev.filter((c) => c.id !== id))
+    setExpanded((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
   }
 
   const trimmed = useMemo<DraftCategory[]>(
@@ -187,10 +304,20 @@ export function SettingsCategoriesPage(): React.JSX.Element {
   const hasMissingActionParam =
     trimmed.some((c) => actionParamMissing(c.action)) || actionParamMissing(trimmedUncategorized)
   const categoriesChanged = settings ? !sameList(trimmed, settings.categories) : false
+  const allowUncategorizedChanged = settings
+    ? allowUncategorized !== settings.allowUncategorized
+    : false
   const uncategorizedChanged = settings
     ? !actionsEqual(trimmedUncategorized, settings.uncategorizedAction)
     : false
-  const changed = categoriesChanged || uncategorizedChanged
+  const uncategorizedCountModeChanged = settings
+    ? uncategorizedCountMode !== settings.uncategorizedCountMode
+    : false
+  const changed =
+    categoriesChanged ||
+    allowUncategorizedChanged ||
+    uncategorizedChanged ||
+    uncategorizedCountModeChanged
   const canSave = changed && !hasEmptyName && !hasMissingActionParam
 
   async function handleSave(): Promise<void> {
@@ -198,10 +325,17 @@ export function SettingsCategoriesPage(): React.JSX.Element {
     setSaveState('loading')
     setSaveError(null)
     try {
-      const next = await window.api.settings.setCategories(trimmed, trimmedUncategorized)
+      const next = await window.api.settings.setCategories(
+        trimmed,
+        trimmedUncategorized,
+        allowUncategorized,
+        uncategorizedCountMode
+      )
       setSettings(next)
       setDrafts(next.categories)
+      setAllowUncategorized(next.allowUncategorized)
       setUncategorized(next.uncategorizedAction)
+      setUncategorizedCountMode(next.uncategorizedCountMode)
       setSaveState('idle')
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1500)
@@ -228,143 +362,158 @@ export function SettingsCategoriesPage(): React.JSX.Element {
           </p>
         )}
 
-        {drafts.map((category, index) => (
-          <div key={category.id} className="space-y-3 rounded-md border p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor={`cat-name-${category.id}`}>Name</Label>
-                <Input
-                  id={`cat-name-${category.id}`}
-                  placeholder="e.g. Receipts"
-                  value={category.name}
-                  onChange={(e) => updateDraft(category.id, { name: e.target.value })}
-                  autoFocus={index === drafts.length - 1 && category.name === ''}
+        {drafts.map((category, index) => {
+          const isOpen = expanded.has(category.id) || category.name.trim().length === 0
+          return (
+            <div key={category.id} className="rounded-md border">
+              <div className="flex items-center gap-2 p-2">
+                <IconPicker
+                  value={category.icon}
+                  onChange={(name) => updateDraft(category.id, { icon: name })}
+                  ariaLabel="Change icon"
                 />
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(category.id)}
+                  aria-expanded={isOpen}
+                  className="flex flex-1 items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-accent/60"
+                >
+                  <span className="flex-1 truncate text-sm font-medium">
+                    {category.name.trim() || (
+                      <span className="text-muted-foreground italic">Untitled category</span>
+                    )}
+                  </span>
+                  <span className="hidden truncate text-xs text-muted-foreground sm:inline">
+                    {actionSummary(category.action)}
+                  </span>
+                  <ChevronDownIcon
+                    className={cn(
+                      'size-4 shrink-0 text-muted-foreground transition-transform',
+                      !isOpen && '-rotate-90'
+                    )}
+                  />
+                </button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => removeDraft(category.id)}
+                  aria-label="Remove category"
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  <Trash2Icon className="size-4" />
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => removeDraft(category.id)}
-                aria-label="Remove category"
-                className="mt-7 text-muted-foreground hover:text-destructive"
-              >
-                <Trash2Icon className="size-4" />
-              </Button>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor={`cat-instr-${category.id}`}>Instructions</Label>
-              <AutoTextarea
-                id={`cat-instr-${category.id}`}
-                placeholder="Describe which messages belong in this category. The AI reads this to decide."
-                value={category.instructions}
-                onChange={(e) => updateDraft(category.id, { instructions: e.target.value })}
-                rows={3}
-                className="resize-none overflow-hidden"
-              />
-            </div>
+              {isOpen && (
+                <div className="space-y-4 border-t p-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor={`cat-name-${category.id}`}>Name</Label>
+                      <Input
+                        id={`cat-name-${category.id}`}
+                        placeholder="e.g. Receipts"
+                        value={category.name}
+                        onChange={(e) => updateDraft(category.id, { name: e.target.value })}
+                        autoFocus={index === drafts.length - 1 && category.name === ''}
+                      />
+                    </div>
 
-            <div className="space-y-2">
-              <Label htmlFor={`cat-action-${category.id}`}>When a message matches</Label>
-              <Select
-                value={category.action.kind}
-                onValueChange={(v) => setActionKind(category.id, v as CategoryActionKind)}
-              >
-                <SelectTrigger id={`cat-action-${category.id}`} className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CATEGORY_ACTIONS.map((a) => (
-                    <SelectItem key={a.value} value={a.value}>
-                      {a.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">{actionHint(category.action.kind)}</p>
+                    <div className="space-y-2">
+                      <Label htmlFor={`cat-action-${category.id}`}>When a message matches</Label>
+                      <Select
+                        value={category.action.kind}
+                        onValueChange={(v) => setActionKind(category.id, v as CategoryActionKind)}
+                      >
+                        <SelectTrigger id={`cat-action-${category.id}`} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CATEGORY_ACTIONS.map((a) => (
+                            <SelectItem key={a.value} value={a.value}>
+                              {a.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {actionHint(category.action.kind)}
+                      </p>
 
-              {category.action.kind === 'moveToFolder' && (
-                <div className="space-y-1 pt-1">
-                  <Label htmlFor={`cat-folder-${category.id}`} className="text-xs">
-                    Folder name
-                  </Label>
-                  <Input
-                    id={`cat-folder-${category.id}`}
-                    placeholder="e.g. Receipts or Archive/2026"
-                    value={category.action.folder}
-                    onChange={(e) => setActionFolder(category.id, e.target.value)}
-                  />
-                </div>
-              )}
-
-              {category.action.kind === 'runCommand' && (
-                <div className="space-y-1 pt-1">
-                  <Label htmlFor={`cat-cmd-${category.id}`} className="text-xs">
-                    Command
-                  </Label>
-                  <Input
-                    id={`cat-cmd-${category.id}`}
-                    placeholder="e.g. /usr/local/bin/notify {{subject}}"
-                    value={category.action.command}
-                    onChange={(e) => setActionCommand(category.id, e.target.value)}
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label>Icon</Label>
-              <div className="grid grid-cols-8 gap-1.5 sm:grid-cols-12">
-                {CATEGORY_ICONS.map((name) => {
-                  const Icon = categoryIconComponent(name)
-                  const selected = category.icon === name
-                  return (
-                    <button
-                      key={name}
-                      type="button"
-                      onClick={() => updateDraft(category.id, { icon: name })}
-                      aria-label={name}
-                      aria-pressed={selected}
-                      className={cn(
-                        'flex size-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
-                        selected && 'border-primary bg-accent text-foreground'
+                      {category.action.kind === 'moveToFolder' && (
+                        <div className="space-y-1 pt-1">
+                          <Label htmlFor={`cat-folder-${category.id}`} className="text-xs">
+                            Folder name
+                          </Label>
+                          <Input
+                            id={`cat-folder-${category.id}`}
+                            placeholder="e.g. Receipts or Archive/2026"
+                            value={category.action.folder}
+                            onChange={(e) => setActionFolder(category.id, e.target.value)}
+                          />
+                        </div>
                       )}
-                    >
-                      <Icon className="size-4" />
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor={`cat-count-${category.id}`}>Sidebar badge shows</Label>
-              <Select
-                value={category.countMode}
-                onValueChange={(v) =>
-                  updateDraft(category.id, { countMode: v as CategoryCountMode })
-                }
-              >
-                <SelectTrigger id={`cat-count-${category.id}`} className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CATEGORY_COUNT_MODES.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                {CATEGORY_COUNT_MODES.find((m) => m.value === category.countMode)?.hint}
-              </p>
+                      {category.action.kind === 'runCommand' && (
+                        <div className="space-y-1 pt-1">
+                          <Label htmlFor={`cat-cmd-${category.id}`} className="text-xs">
+                            Command
+                          </Label>
+                          <Input
+                            id={`cat-cmd-${category.id}`}
+                            placeholder="e.g. /usr/local/bin/notify {{subject}}"
+                            value={category.action.command}
+                            onChange={(e) => setActionCommand(category.id, e.target.value)}
+                            spellCheck={false}
+                            autoComplete="off"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor={`cat-instr-${category.id}`}>Instructions</Label>
+                    <AutoTextarea
+                      id={`cat-instr-${category.id}`}
+                      placeholder="Describe which messages belong in this category. The AI reads this to decide."
+                      value={category.instructions}
+                      onChange={(e) => updateDraft(category.id, { instructions: e.target.value })}
+                      rows={3}
+                      className="resize-none overflow-hidden"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor={`cat-count-${category.id}`}>Sidebar badge shows</Label>
+                      <Select
+                        value={category.countMode}
+                        onValueChange={(v) =>
+                          updateDraft(category.id, { countMode: v as CategoryCountMode })
+                        }
+                      >
+                        <SelectTrigger id={`cat-count-${category.id}`} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CATEGORY_COUNT_MODES.map((m) => (
+                            <SelectItem key={m.value} value={m.value}>
+                              {m.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {CATEGORY_COUNT_MODES.find((m) => m.value === category.countMode)?.hint}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
 
         <Button type="button" variant="outline" onClick={addDraft}>
           <PlusIcon />
@@ -379,6 +528,23 @@ export function SettingsCategoriesPage(): React.JSX.Element {
             Fallback action for incoming mail that doesn't fit any of the categories above.
           </p>
         </div>
+
+        <Label htmlFor="allow-uncategorized" className="flex cursor-pointer items-start gap-3">
+          <input
+            id="allow-uncategorized"
+            type="checkbox"
+            checked={allowUncategorized}
+            onChange={(e) => setAllowUncategorized(e.target.checked)}
+            className="mt-0.5 size-4 rounded border-input"
+          />
+          <span className="space-y-0.5">
+            <span className="block text-sm font-medium">Allow category none</span>
+            <span className="block text-xs font-normal text-muted-foreground">
+              Enabled by default. If you turn this off, the AI must always choose one of your
+              categories and can’t leave the message as uncategorized.
+            </span>
+          </span>
+        </Label>
 
         <div className="space-y-2">
           <Label htmlFor="uncategorized-action">Action</Label>
@@ -430,6 +596,28 @@ export function SettingsCategoriesPage(): React.JSX.Element {
               />
             </div>
           )}
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="uncategorized-count">Sidebar badge shows</Label>
+          <Select
+            value={uncategorizedCountMode}
+            onValueChange={(v) => setUncategorizedCountMode(v as CategoryCountMode)}
+          >
+            <SelectTrigger id="uncategorized-count" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CATEGORY_COUNT_MODES.map((m) => (
+                <SelectItem key={m.value} value={m.value}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {CATEGORY_COUNT_MODES.find((m) => m.value === uncategorizedCountMode)?.hint}
+          </p>
         </div>
       </div>
 

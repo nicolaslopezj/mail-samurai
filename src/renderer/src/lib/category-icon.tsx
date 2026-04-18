@@ -1,76 +1,36 @@
 import type { CategoryIcon } from '@shared/settings'
-import {
-  AlertCircleIcon,
-  BellIcon,
-  BookmarkIcon,
-  Briefcase as BriefcaseIcon,
-  Building2Icon,
-  CalendarIcon,
-  ClockIcon,
-  CodeIcon,
-  CreditCardIcon,
-  DollarSignIcon,
-  FileTextIcon,
-  FlagIcon,
-  FolderIcon,
-  GiftIcon,
-  GlobeIcon,
-  HeartIcon,
-  HomeIcon,
-  InboxIcon,
-  LockIcon,
-  type LucideIcon,
-  MailIcon,
-  MegaphoneIcon,
-  NewspaperIcon,
-  PackageIcon,
-  PaperclipIcon,
-  ReceiptIcon,
-  ShieldIcon,
-  ShoppingCartIcon,
-  SparklesIcon,
-  StarIcon,
-  TagIcon,
-  UsersIcon,
-  ZapIcon
-} from 'lucide-react'
+import * as LucideIcons from 'lucide-react'
+import { type LucideIcon, TagIcon } from 'lucide-react'
 
-export const CATEGORY_ICON_MAP: Record<CategoryIcon, LucideIcon> = {
-  Tag: TagIcon,
-  Mail: MailIcon,
-  Inbox: InboxIcon,
-  Receipt: ReceiptIcon,
-  ShoppingCart: ShoppingCartIcon,
-  Package: PackageIcon,
-  Newspaper: NewspaperIcon,
-  Bell: BellIcon,
-  Megaphone: MegaphoneIcon,
-  Star: StarIcon,
-  Heart: HeartIcon,
-  Bookmark: BookmarkIcon,
-  Flag: FlagIcon,
-  Briefcase: BriefcaseIcon,
-  Building2: Building2Icon,
-  Users: UsersIcon,
-  FileText: FileTextIcon,
-  Folder: FolderIcon,
-  CreditCard: CreditCardIcon,
-  DollarSign: DollarSignIcon,
-  Gift: GiftIcon,
-  Calendar: CalendarIcon,
-  Clock: ClockIcon,
-  Paperclip: PaperclipIcon,
-  Lock: LockIcon,
-  Shield: ShieldIcon,
-  Zap: ZapIcon,
-  Sparkles: SparklesIcon,
-  Code: CodeIcon,
-  Globe: GlobeIcon,
-  Home: HomeIcon,
-  AlertCircle: AlertCircleIcon
-}
+type IconEntry = { name: string; Component: LucideIcon }
+
+/**
+ * Every icon lucide-react ships, keyed by its PascalCase name without the
+ * `Icon` suffix (e.g. `Mail`, `CircleCheckBig`). We also filter out the
+ * generic `Icon` factory and any `Lucide…` aliases.
+ */
+const ICON_ENTRIES: IconEntry[] = Object.entries(LucideIcons as Record<string, unknown>)
+  .filter((entry) => {
+    const [name, value] = entry
+    if (typeof value !== 'object' && typeof value !== 'function') return false
+    if (!name.endsWith('Icon')) return false
+    if (name === 'Icon') return false
+    // Only PascalCase names are pre-built icon components; factories like
+    // `createLucideIcon` or aliases like `LucideFoo` are not renderable here.
+    if (!/^[A-Z]/.test(name)) return false
+    if (name.startsWith('Lucide')) return false
+    return true
+  })
+  .map(([name, Component]) => ({ name: name.slice(0, -4), Component: Component as LucideIcon }))
+  .sort((a, b) => a.name.localeCompare(b.name))
+
+const ICON_BY_NAME: Map<string, LucideIcon> = new Map(
+  ICON_ENTRIES.map((e) => [e.name, e.Component])
+)
+
+export const ALL_CATEGORY_ICONS: IconEntry[] = ICON_ENTRIES
 
 export function categoryIconComponent(name: CategoryIcon | null | undefined): LucideIcon {
   if (!name) return TagIcon
-  return CATEGORY_ICON_MAP[name] ?? TagIcon
+  return ICON_BY_NAME.get(name) ?? TagIcon
 }

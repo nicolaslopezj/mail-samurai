@@ -312,10 +312,14 @@ export async function pullKv<T>(
 
 export const KV_KEYS = {
   uncategorizedAction: 'settings.uncategorizedAction',
-  summaryLanguage: 'settings.summaryLanguage'
+  summaryLanguage: 'settings.summaryLanguage',
+  allowUncategorized: 'settings.allowUncategorized',
+  uncategorizedCountMode: 'settings.uncategorizedCountMode'
 } as const
 
 export type SyncedKv = {
   uncategorizedAction: CategoryAction
   summaryLanguage: SummaryLanguage
+  allowUncategorized: boolean
+  uncategorizedCountMode: CategoryCountMode
 }
