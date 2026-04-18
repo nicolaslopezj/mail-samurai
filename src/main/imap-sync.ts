@@ -25,6 +25,8 @@ export type SyncResult = {
   deleted: number
 }
 
+const IMAP_SYNC_TIMEOUT_MS = 90_000
+
 function attachImapErrorHandler(client: ImapFlow, accountEmail: string): ImapFlow {
   client.on('error', (err) => {
     const code = (err as { code?: string } | null)?.code
@@ -49,6 +51,32 @@ function makeClient(account: Account, password: string): ImapFlow {
     }),
     account.email
   )
+}
+
+async function withImapTimeout<T>(
+  client: ImapFlow,
+  accountEmail: string,
+  work: () => Promise<T>
+): Promise<T> {
+  let timeout: NodeJS.Timeout | null = null
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => {
+          console.error(`[imap] ${accountEmail} sync timed out after ${IMAP_SYNC_TIMEOUT_MS}ms`)
+          try {
+            client.close()
+          } catch {
+            // ignore forced-close failures
+          }
+          reject(new Error(`IMAP sync timed out for ${accountEmail}`))
+        }, IMAP_SYNC_TIMEOUT_MS)
+      })
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 }
 
 function toAddress(
@@ -122,161 +150,164 @@ export async function syncAccount(account: Account, syncFromMs: number): Promise
   if (!password) throw new Error(`No stored password for account ${account.email}`)
 
   const client = makeClient(account, password)
-  await client.connect()
+  return withImapTimeout(client, account.email, async () => {
+    await client.connect()
 
-  let added = 0
-  let updated = 0
-  let archivedCount = 0
-  let deletedCount = 0
+    let added = 0
+    let updated = 0
+    let archivedCount = 0
+    let deletedCount = 0
 
-  try {
-    const mailbox = await client.mailboxOpen('INBOX')
-    const uidValidity = Number(mailbox.uidValidity)
+    try {
+      const mailbox = await client.mailboxOpen('INBOX')
+      const uidValidity = Number(mailbox.uidValidity)
 
-    const state = getSyncState(account.id)
-    if (state.uidValidity !== null && state.uidValidity !== uidValidity) {
-      // UIDVALIDITY changed — wipe the cache for this account.
-      deleteAllForAccount(account.id)
-    }
+      const state = getSyncState(account.id)
+      if (state.uidValidity !== null && state.uidValidity !== uidValidity) {
+        // UIDVALIDITY changed — wipe the cache for this account.
+        deleteAllForAccount(account.id)
+      }
 
-    const since = new Date(syncFromMs)
+      const since = new Date(syncFromMs)
 
-    const serverUidsRaw = (await client.search({ since }, { uid: true })) || []
-    const serverUids = serverUidsRaw.map((n) => Number(n))
+      const serverUidsRaw = (await client.search({ since }, { uid: true })) || []
+      const serverUids = serverUidsRaw.map((n) => Number(n))
 
-    const localUids = new Set(listLocalUids(account.id, uidValidity))
+      const localUids = new Set(listLocalUids(account.id, uidValidity))
 
-    const newUids = serverUids.filter((uid) => !localUids.has(uid))
-    const existingUids = serverUids.filter((uid) => localUids.has(uid))
+      const newUids = serverUids.filter((uid) => !localUids.has(uid))
+      const existingUids = serverUids.filter((uid) => localUids.has(uid))
 
-    // --- Fetch full content for new messages -------------------------------
-    if (newUids.length > 0) {
-      const batch: UpsertMessage[] = []
-      for await (const msg of client.fetch(
-        newUids,
-        { uid: true, envelope: true, flags: true, internalDate: true, source: true },
-        { uid: true }
-      )) {
-        try {
-          const source = msg.source as Buffer | undefined
-          const flags = Array.from((msg.flags as Set<string> | undefined) ?? [])
-          const internalDate = msg.internalDate as Date | undefined
-          const envelope = msg.envelope as
-            | {
-                date?: Date
-                subject?: string
-                messageId?: string
-                from?: { name?: string; address?: string }[]
-                to?: { name?: string; address?: string }[]
-                cc?: { name?: string; address?: string }[]
-              }
-            | undefined
+      // --- Fetch full content for new messages -------------------------------
+      if (newUids.length > 0) {
+        const batch: UpsertMessage[] = []
+        for await (const msg of client.fetch(
+          newUids,
+          { uid: true, envelope: true, flags: true, internalDate: true, source: true },
+          { uid: true }
+        )) {
+          try {
+            const source = msg.source as Buffer | undefined
+            const flags = Array.from((msg.flags as Set<string> | undefined) ?? [])
+            const internalDate = msg.internalDate as Date | undefined
+            const envelope = msg.envelope as
+              | {
+                  date?: Date
+                  subject?: string
+                  messageId?: string
+                  from?: { name?: string; address?: string }[]
+                  to?: { name?: string; address?: string }[]
+                  cc?: { name?: string; address?: string }[]
+                }
+              | undefined
 
-          const parsed = source ? await simpleParser(source) : null
+            const parsed = source ? await simpleParser(source) : null
 
-          const dateMs =
-            internalDate?.getTime() ??
-            envelope?.date?.getTime() ??
-            parsed?.date?.getTime() ??
-            Date.now()
+            const dateMs =
+              internalDate?.getTime() ??
+              envelope?.date?.getTime() ??
+              parsed?.date?.getTime() ??
+              Date.now()
 
-          const fromAddress = toAddress(parsed?.from?.value?.[0]) ?? toAddress(envelope?.from?.[0])
-          const toAddresses = parsed?.to
-            ? toAddressList(parsed.to as never)
-            : (envelope?.to ?? [])
-                .map((a) => toAddress(a))
-                .filter((a): a is EmailAddress => a !== null)
-          const ccAddresses = parsed?.cc
-            ? toAddressList(parsed.cc as never)
-            : (envelope?.cc ?? [])
-                .map((a) => toAddress(a))
-                .filter((a): a is EmailAddress => a !== null)
+            const fromAddress =
+              toAddress(parsed?.from?.value?.[0]) ?? toAddress(envelope?.from?.[0])
+            const toAddresses = parsed?.to
+              ? toAddressList(parsed.to as never)
+              : (envelope?.to ?? [])
+                  .map((a) => toAddress(a))
+                  .filter((a): a is EmailAddress => a !== null)
+            const ccAddresses = parsed?.cc
+              ? toAddressList(parsed.cc as never)
+              : (envelope?.cc ?? [])
+                  .map((a) => toAddress(a))
+                  .filter((a): a is EmailAddress => a !== null)
 
-          batch.push({
+            batch.push({
+              accountId: account.id,
+              uidValidity,
+              uid: Number(msg.uid),
+              messageId: parsed?.messageId ?? envelope?.messageId ?? null,
+              subject: parsed?.subject ?? envelope?.subject ?? null,
+              from: fromAddress,
+              to: toAddresses,
+              cc: ccAddresses,
+              dateMs,
+              flags,
+              snippet: makeSnippet(parsed?.text ?? null),
+              bodyText: parsed?.text ?? null,
+              bodyHtml: typeof parsed?.html === 'string' ? parsed.html : null,
+              inlineAttachments: parsed
+                ? extractInlineAttachments(parsed as { attachments?: ParsedAttachment[] })
+                : []
+            })
+          } catch (err) {
+            console.error(`[sync] failed to parse uid=${msg.uid} for ${account.email}:`, err)
+          }
+        }
+        upsertMessages(batch)
+        added = batch.length
+        // Fold the new messages into the contacts address book. INBOX fetches
+        // always represent received mail from the account owner's perspective
+        // — sent messages go to a separate folder we don't sync. If the user
+        // happens to be the From (BCC-to-self), `recordMessageAddresses`
+        // filters their own address back out.
+        for (const m of batch) {
+          recordMessageAddresses({
             accountId: account.id,
-            uidValidity,
-            uid: Number(msg.uid),
-            messageId: parsed?.messageId ?? envelope?.messageId ?? null,
-            subject: parsed?.subject ?? envelope?.subject ?? null,
-            from: fromAddress,
-            to: toAddresses,
-            cc: ccAddresses,
-            dateMs,
-            flags,
-            snippet: makeSnippet(parsed?.text ?? null),
-            bodyText: parsed?.text ?? null,
-            bodyHtml: typeof parsed?.html === 'string' ? parsed.html : null,
-            inlineAttachments: parsed
-              ? extractInlineAttachments(parsed as { attachments?: ParsedAttachment[] })
-              : []
+            ownEmail: account.email,
+            from: m.from,
+            to: m.to,
+            cc: m.cc,
+            dateMs: m.dateMs,
+            fromOwner: m.from?.address.toLowerCase() === account.email.toLowerCase()
           })
-        } catch (err) {
-          console.error(`[sync] failed to parse uid=${msg.uid} for ${account.email}:`, err)
         }
       }
-      upsertMessages(batch)
-      added = batch.length
-      // Fold the new messages into the contacts address book. INBOX fetches
-      // always represent received mail from the account owner's perspective
-      // — sent messages go to a separate folder we don't sync. If the user
-      // happens to be the From (BCC-to-self), `recordMessageAddresses`
-      // filters their own address back out.
-      for (const m of batch) {
-        recordMessageAddresses({
-          accountId: account.id,
-          ownEmail: account.email,
-          from: m.from,
-          to: m.to,
-          cc: m.cc,
-          dateMs: m.dateMs,
-          fromOwner: m.from?.address.toLowerCase() === account.email.toLowerCase()
-        })
+
+      // --- Refresh flags for messages we already have ------------------------
+      if (existingUids.length > 0) {
+        const updates: { uid: number; flags: string[] }[] = []
+        for await (const msg of client.fetch(
+          existingUids,
+          { uid: true, flags: true },
+          { uid: true }
+        )) {
+          const flags = Array.from((msg.flags as Set<string> | undefined) ?? [])
+          updates.push({ uid: Number(msg.uid), flags })
+        }
+        updateFlags(account.id, uidValidity, updates)
+        updated = updates.length
+      }
+
+      // --- Reconcile archived / out-of-window rows --------------------------
+      const reconciled = reconcileInbox({
+        accountId: account.id,
+        uidValidity,
+        serverUids,
+        syncFromMs,
+        archiveRetentionMs: ARCHIVE_RETENTION_MS,
+        now: Date.now()
+      })
+      archivedCount = reconciled.archived
+      deletedCount = reconciled.deleted
+
+      setSyncState(account.id, uidValidity, Date.now())
+    } finally {
+      try {
+        await client.logout()
+      } catch {
+        // ignore
       }
     }
 
-    // --- Refresh flags for messages we already have ------------------------
-    if (existingUids.length > 0) {
-      const updates: { uid: number; flags: string[] }[] = []
-      for await (const msg of client.fetch(
-        existingUids,
-        { uid: true, flags: true },
-        { uid: true }
-      )) {
-        const flags = Array.from((msg.flags as Set<string> | undefined) ?? [])
-        updates.push({ uid: Number(msg.uid), flags })
-      }
-      updateFlags(account.id, uidValidity, updates)
-      updated = updates.length
-    }
-
-    // --- Reconcile archived / out-of-window rows --------------------------
-    const reconciled = reconcileInbox({
+    return {
       accountId: account.id,
-      uidValidity,
-      serverUids,
-      syncFromMs,
-      archiveRetentionMs: ARCHIVE_RETENTION_MS,
-      now: Date.now()
-    })
-    archivedCount = reconciled.archived
-    deletedCount = reconciled.deleted
-
-    setSyncState(account.id, uidValidity, Date.now())
-  } finally {
-    try {
-      await client.logout()
-    } catch {
-      // ignore
+      added,
+      updated,
+      archived: archivedCount,
+      deleted: deletedCount
     }
-  }
-
-  return {
-    accountId: account.id,
-    added,
-    updated,
-    archived: archivedCount,
-    deleted: deletedCount
-  }
+  })
 }
 
 /**
