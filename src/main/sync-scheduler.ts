@@ -7,7 +7,7 @@ import { getPassword } from './accounts-store'
 import { categorizePendingMessages } from './ai-auto'
 import { syncCloudNow } from './cloud-sync'
 import { syncAccount } from './imap-sync'
-import { prunePermanent } from './messages-store'
+import { prunePermanent, updateFlags } from './messages-store'
 import { getPollIntervalMinutes, getSyncFromMs, getUiSettings } from './settings-store'
 
 const STARTUP_DELAY_MS = 2_000
@@ -36,6 +36,7 @@ type RealtimeWorker = {
   stopped: boolean
   reconnectAttempt: number
   client: ImapFlow | null
+  uidValidity: number | null
   syncTimer: NodeJS.Timeout | null
 }
 
@@ -128,6 +129,17 @@ function scheduleRealtimeSync(worker: RealtimeWorker, reason: string): void {
   }, REALTIME_SYNC_DEBOUNCE_MS)
 }
 
+async function applyRemoteFlagUpdate(
+  worker: RealtimeWorker,
+  uid: number,
+  flags: Set<string> | string[]
+): Promise<boolean> {
+  if (worker.uidValidity === null) return false
+  updateFlags(worker.account.id, worker.uidValidity, [{ uid, flags: Array.from(flags) }])
+  notifyChanged(worker.account.id)
+  return true
+}
+
 async function runRealtimeWorker(worker: RealtimeWorker): Promise<void> {
   while (!worker.stopped) {
     let client: ImapFlow | null = null
@@ -141,6 +153,7 @@ async function runRealtimeWorker(worker: RealtimeWorker): Promise<void> {
 
       client = makeRealtimeClient(worker.account, password)
       worker.client = client
+      const currentClient = client
 
       client.on('exists', (data) => {
         if (data.path !== 'INBOX') return
@@ -153,13 +166,43 @@ async function runRealtimeWorker(worker: RealtimeWorker): Promise<void> {
         scheduleRealtimeSync(worker, 'expunge')
       })
 
+      client.on('flags', (data) => {
+        if (data.path !== 'INBOX') return
+        ;(async () => {
+          if (typeof data.uid === 'number') {
+            const applied = await applyRemoteFlagUpdate(worker, data.uid, data.flags)
+            if (applied) return
+          }
+
+          try {
+            const fetched = await currentClient.fetchOne(String(data.seq), { uid: true, flags: true })
+            const uid = fetched && typeof fetched.uid === 'number' ? fetched.uid : null
+            const flags = fetched && fetched.flags ? fetched.flags : data.flags
+            if (uid !== null) {
+              const applied = await applyRemoteFlagUpdate(worker, uid, flags)
+              if (applied) return
+            }
+          } catch (err) {
+            console.warn(
+              `[imap:idle] ${worker.account.email} failed to resolve flags event seq=${data.seq}:`,
+              err
+            )
+          }
+
+          scheduleRealtimeSync(worker, 'flags')
+        })().catch((err) =>
+          console.error(`[imap:idle] ${worker.account.email} flags update failed:`, err)
+        )
+      })
+
       client.on('close', () => {
         if (worker.stopped) return
         console.warn(`[imap:idle] ${worker.account.email} connection closed`)
       })
 
       await client.connect()
-      await client.mailboxOpen('INBOX')
+      const mailbox = await client.mailboxOpen('INBOX')
+      worker.uidValidity = Number(mailbox.uidValidity)
       worker.reconnectAttempt = 0
       scheduleRealtimeSync(worker, 'connected')
       console.log(`[imap:idle] watching ${worker.account.email}`)
@@ -174,6 +217,7 @@ async function runRealtimeWorker(worker: RealtimeWorker): Promise<void> {
       }
     } finally {
       worker.client = null
+      worker.uidValidity = null
       await closeRealtimeClient(client)
     }
 
@@ -197,6 +241,7 @@ function startRealtimeWorker(account: Account): void {
     stopped: false,
     reconnectAttempt: 0,
     client: null,
+    uidValidity: null,
     syncTimer: null
   }
   realtimeWorkers.set(account.id, worker)
