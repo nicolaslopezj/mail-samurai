@@ -39,7 +39,7 @@ import * as messages from './messages-store'
 import { KV_KEYS } from './overlay-store'
 import * as store from './settings-store'
 import { sendDraft } from './smtp-send'
-import { notifyChanged, reloadInterval, triggerSync } from './sync-scheduler'
+import { notifyChanged, reloadInterval, reloadRealtimeSync, triggerSync } from './sync-scheduler'
 
 const GITHUB_HOMEPAGE = 'https://github.com/nicolaslopezj/mail-samurai'
 
@@ -188,6 +188,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('accounts:add', async (_event, draft: AccountDraft) => {
     await testImapAuth(draft)
     const account = await accounts.add(draft)
+    reloadRealtimeSync().catch((err) =>
+      console.error(`[imap:idle] failed to start watcher for ${account.email}:`, err)
+    )
     // Kick off a first sync for the new account.
     triggerSync(account.id).catch((err) =>
       console.error(`[sync] initial sync for ${account.email} failed:`, err)
@@ -195,7 +198,12 @@ export function registerIpcHandlers(): void {
     return account
   })
 
-  ipcMain.handle('accounts:remove', (_event, id: string) => accounts.remove(id))
+  ipcMain.handle('accounts:remove', async (_event, id: string) => {
+    await accounts.remove(id)
+    reloadRealtimeSync().catch((err) =>
+      console.error(`[imap:idle] failed to reload watchers after remove ${id}:`, err)
+    )
+  })
 
   ipcMain.handle('accounts:setLabel', (_event, id: string, label: string | null) =>
     accounts.setLabel(id, label)

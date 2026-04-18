@@ -8,7 +8,7 @@ import { backfillFromMessages, isEmpty as contactsEmpty } from './contacts-store
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { initSettings } from './settings-store'
-import { startScheduler } from './sync-scheduler'
+import { startScheduler, stopScheduler } from './sync-scheduler'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -74,4 +74,8 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  stopScheduler()
 })

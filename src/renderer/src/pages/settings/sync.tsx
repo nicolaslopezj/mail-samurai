@@ -120,8 +120,8 @@ export function SettingsSyncPage(): React.JSX.Element {
         <p className="text-sm text-muted-foreground">
           Mail Samurai syncs and categorizes emails starting from <strong>{syncFromLabel}</strong>.
           Anything in your inbox from that date on stays cached locally until it's archived upstream
-          — archived copies are removed after {ARCHIVE_RETENTION_DAYS} days. The sync runs every{' '}
-          <strong>{settings?.pollIntervalMinutes ?? '…'} minutes</strong> in the background.
+          — archived copies are removed after {ARCHIVE_RETENTION_DAYS} days. New mail is watched
+          almost in real time with IMAP IDLE; the interval below is the fallback resync cadence.
         </p>
       </div>
 
@@ -144,7 +144,7 @@ export function SettingsSyncPage(): React.JSX.Element {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="poll">Polling interval (minutes)</Label>
+        <Label htmlFor="poll">Fallback resync interval (minutes)</Label>
         <div className="flex items-center gap-2">
           <Input
             id="poll"
@@ -157,7 +157,8 @@ export function SettingsSyncPage(): React.JSX.Element {
             className="w-32"
           />
           <span className="text-sm text-muted-foreground">
-            Between {POLL_MIN_MINUTES} and {POLL_MAX_MINUTES} minutes.
+            Used for periodic catch-up syncs between {POLL_MIN_MINUTES} and {POLL_MAX_MINUTES}{' '}
+            minutes.
           </span>
         </div>
         <div className="flex flex-wrap gap-2 pt-1">
