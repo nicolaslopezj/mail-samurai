@@ -41,6 +41,10 @@ import { cn } from '@/lib/utils'
 
 const OTHER_CATEGORY_VALUE = '__other__'
 
+// Keep in sync with the `duration-200` on the list <li> below — the IPC call
+// is deferred by this amount so the collapse animation has time to play.
+const ARCHIVE_ANIMATION_MS = 200
+
 function isEditableTarget(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null
   if (!element) return false
@@ -111,6 +115,10 @@ export function InboxPage({
   const [selected, setSelected] = useState<{ accountId: string; uid: number } | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [unreadOnly, setUnreadOnly] = useState(false)
+  // Messages currently animating out of the list. We hold on to them with
+  // a CSS height+opacity transition before firing the IPC call, so the row
+  // visually collapses instead of popping out when the refetch drops it.
+  const [exitingKeys, setExitingKeys] = useState<Set<string>>(() => new Set())
   const isMountedRef = useRef(true)
   const listRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef(new Map<string, HTMLButtonElement>())
@@ -209,8 +217,15 @@ export function InboxPage({
   const visibleMessages = useMemo(() => {
     if (!messages) return null
     if (!unreadOnly) return messages
-    return messages.filter((m) => !m.seen)
-  }, [messages, unreadOnly])
+    // Pin the currently-selected message so it doesn't vanish the moment the
+    // reader marks it as seen — it should stay visible until the user picks a
+    // different message (at which point the filter can legitimately drop it).
+    return messages.filter(
+      (m) =>
+        !m.seen ||
+        (selected !== null && m.accountId === selected.accountId && m.uid === selected.uid)
+    )
+  }, [messages, unreadOnly, selected])
   const selectedIndex = useMemo(() => {
     if (!visibleMessages || !selected) return -1
     return visibleMessages.findIndex(
@@ -245,6 +260,9 @@ export function InboxPage({
     activeBatchRef.current = null
     toast.dismiss(active.toastId)
     if (active.selectionBefore) setSelected(active.selectionBefore)
+    // Clear exit animations so the restored rows slide back in at full height
+    // instead of being left in the collapsed state.
+    setExitingKeys(new Set())
     window.api.messages.cancelPendingBatch(active.batchId).catch((err) => {
       console.error('cancelPendingBatch failed:', err)
     })
@@ -323,11 +341,22 @@ export function InboxPage({
         }
       }
 
-      void enqueueArchive(
-        action,
-        [{ accountId: message.accountId, uid: message.uid, subject: message.subject ?? null }],
-        selectionBefore
-      )
+      // Mark the row as exiting so the <li>'s grid-rows + opacity transition
+      // plays, then fire the IPC after the animation has had time to finish.
+      const key = `${message.accountId}:${message.uid}`
+      setExitingKeys((prev) => {
+        const next = new Set(prev)
+        next.add(key)
+        return next
+      })
+      window.setTimeout(() => {
+        if (!isMountedRef.current) return
+        void enqueueArchive(
+          action,
+          [{ accountId: message.accountId, uid: message.uid, subject: message.subject ?? null }],
+          selectionBefore
+        )
+      }, ARCHIVE_ANIMATION_MS)
     },
     [visibleMessages, selected, enqueueArchive]
   )
@@ -338,12 +367,37 @@ export function InboxPage({
     if (targets.length === 0) return
     const selectionBefore = selected
     setSelected(null)
-    void enqueueArchive(
-      'archive',
-      targets.map((m) => ({ accountId: m.accountId, uid: m.uid, subject: m.subject })),
-      selectionBefore
-    )
+    setExitingKeys((prev) => {
+      const next = new Set(prev)
+      for (const t of targets) next.add(`${t.accountId}:${t.uid}`)
+      return next
+    })
+    window.setTimeout(() => {
+      if (!isMountedRef.current) return
+      void enqueueArchive(
+        'archive',
+        targets.map((m) => ({ accountId: m.accountId, uid: m.uid, subject: m.subject })),
+        selectionBefore
+      )
+    }, ARCHIVE_ANIMATION_MS)
   }, [visibleMessages, selected, enqueueArchive])
+
+  // Drop exiting keys for rows that are no longer in the list (archive
+  // committed, refetch dropped them) so the set doesn't grow unbounded.
+  useEffect(() => {
+    if (!messages) return
+    setExitingKeys((prev) => {
+      if (prev.size === 0) return prev
+      const alive = new Set(messages.map((m) => `${m.accountId}:${m.uid}`))
+      let changed = false
+      const next = new Set<string>()
+      for (const key of prev) {
+        if (alive.has(key)) next.add(key)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [messages])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -511,81 +565,97 @@ export function InboxPage({
                         : 'Inbox zero. Nice.'}
               </div>
             ) : (
-              <ul className="divide-y">
+              <ul>
                 {visibleMessages.map((m) => {
                   const isSelected = selected?.accountId === m.accountId && selected.uid === m.uid
                   const account = accountById.get(m.accountId)
                   const unread = !m.seen
                   const itemKey = `${m.accountId}:${m.uidValidity}:${m.uid}`
+                  const exitKey = `${m.accountId}:${m.uid}`
+                  const isExiting = exitingKeys.has(exitKey)
                   return (
-                    <li key={itemKey}>
-                      <button
-                        id={`message-${m.accountId}-${m.uidValidity}-${m.uid}`}
-                        ref={(node) => {
-                          if (node) {
-                            itemRefs.current.set(itemKey, node)
-                            return
-                          }
-                          itemRefs.current.delete(itemKey)
-                        }}
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        tabIndex={isSelected || selected === null ? 0 : -1}
-                        onClick={() => {
-                          setSelected({ accountId: m.accountId, uid: m.uid })
-                          listRef.current?.focus()
-                        }}
-                        onKeyDown={(event) => {
-                          handleListKeyDown(event)
-                        }}
-                        className={cn(
-                          'relative flex w-full flex-col items-start gap-1 py-3 pr-4 pl-6 text-left transition-colors hover:bg-muted/60 focus:outline-none',
-                          isSelected && 'bg-muted'
-                        )}
-                      >
-                        {unread && (
-                          <>
+                    <li
+                      key={itemKey}
+                      className={cn(
+                        'grid transition-[grid-template-rows,opacity] duration-200 ease-in-out',
+                        isExiting ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'
+                      )}
+                      aria-hidden={isExiting || undefined}
+                    >
+                      <div className="min-h-0 overflow-hidden border-b">
+                        <button
+                          id={`message-${m.accountId}-${m.uidValidity}-${m.uid}`}
+                          ref={(node) => {
+                            if (node) {
+                              itemRefs.current.set(itemKey, node)
+                              return
+                            }
+                            itemRefs.current.delete(itemKey)
+                          }}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          tabIndex={isExiting ? -1 : isSelected || selected === null ? 0 : -1}
+                          onClick={() => {
+                            if (isExiting) return
+                            setSelected({ accountId: m.accountId, uid: m.uid })
+                            listRef.current?.focus()
+                          }}
+                          onKeyDown={(event) => {
+                            handleListKeyDown(event)
+                          }}
+                          className={cn(
+                            'relative flex w-full flex-col items-start gap-1 py-3 pr-4 pl-6 text-left transition-colors hover:bg-muted/60 focus:outline-none',
+                            isSelected && 'bg-muted'
+                          )}
+                        >
+                          {unread && (
+                            <>
+                              <span
+                                aria-hidden="true"
+                                className="absolute top-[18px] left-2 size-2 rounded-full bg-sky-500"
+                              />
+                              <span className="sr-only">Unread</span>
+                            </>
+                          )}
+                          <div className="flex w-full items-baseline justify-between gap-2">
                             <span
-                              aria-hidden="true"
-                              className="absolute top-[18px] left-2 size-2 rounded-full bg-sky-500"
-                            />
-                            <span className="sr-only">Unread</span>
-                          </>
-                        )}
-                        <div className="flex w-full items-baseline justify-between gap-2">
-                          <span
-                            className={cn(
-                              'truncate text-sm',
-                              unread ? 'font-semibold' : 'font-medium'
-                            )}
-                          >
-                            {senderLabel(m)}
-                          </span>
-                          <span className="shrink-0 text-xs text-muted-foreground">
-                            {formatDate(m.date)}
-                          </span>
-                        </div>
-                        <div className={cn('line-clamp-1 w-full text-sm', unread && 'font-medium')}>
-                          {m.subject || '(no subject)'}
-                        </div>
-                        {(m.aiSummary || m.snippet) && (
-                          <div
-                            className={cn(
-                              'w-full whitespace-pre-line text-xs text-muted-foreground',
-                              !m.aiSummary && 'line-clamp-2'
-                            )}
-                          >
-                            {m.aiSummary || m.snippet}
+                              className={cn(
+                                'truncate text-sm',
+                                unread ? 'font-semibold' : 'font-medium'
+                              )}
+                            >
+                              {senderLabel(m)}
+                            </span>
+                            <span className="shrink-0 text-xs text-muted-foreground">
+                              {formatDate(m.date)}
+                            </span>
                           </div>
-                        )}
-                        <MessageMeta
-                          message={m}
-                          category={m.categoryId ? (categoryById.get(m.categoryId) ?? null) : null}
-                          allowUncategorized={allowUncategorized}
-                          account={!accountId ? (account ?? null) : null}
-                        />
-                      </button>
+                          <div
+                            className={cn('line-clamp-1 w-full text-sm', unread && 'font-medium')}
+                          >
+                            {m.subject || '(no subject)'}
+                          </div>
+                          {(m.aiSummary || m.snippet) && (
+                            <div
+                              className={cn(
+                                'w-full whitespace-pre-line text-xs text-muted-foreground',
+                                !m.aiSummary && 'line-clamp-2'
+                              )}
+                            >
+                              {m.aiSummary || m.snippet}
+                            </div>
+                          )}
+                          <MessageMeta
+                            message={m}
+                            category={
+                              m.categoryId ? (categoryById.get(m.categoryId) ?? null) : null
+                            }
+                            allowUncategorized={allowUncategorized}
+                            account={!accountId ? (account ?? null) : null}
+                          />
+                        </button>
+                      </div>
                     </li>
                   )
                 })}
