@@ -1,6 +1,6 @@
 {
   "name": "mail-samurai",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Electron app that polls multiple IMAP email accounts and categorizes messages with AI.",
   "main": "./out/main/index.js",
   "author": {
