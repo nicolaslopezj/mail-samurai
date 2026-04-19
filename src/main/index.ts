@@ -8,6 +8,7 @@ import { backfillFromMessages, isEmpty as contactsEmpty } from './contacts-store
 import { initDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { initLogger } from './logger'
+import { initPendingArchive } from './pending-archive'
 import { initSettings } from './settings-store'
 import { startScheduler, stopScheduler } from './sync-scheduler'
 
@@ -66,6 +67,10 @@ app.whenReady().then(async () => {
     }
   }
   registerIpcHandlers()
+  // Re-schedule any archive/unarchive batches that survived a restart.
+  // Must run after the DB is open but before the first window loads so the
+  // renderer's initial `listPendingBatches` call sees a warm state.
+  initPendingArchive()
   startScheduler()
   startAutoUpdater()
   createWindow()

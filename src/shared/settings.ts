@@ -461,6 +461,21 @@ export type EmailDraft = {
   inReplyToMessageId?: string | null
 }
 
+/**
+ * A user-initiated archive / unarchive batch that's parked for a few seconds
+ * so Cmd+Z (or the toast's Undo button) can cancel it before anything hits
+ * IMAP. Every list view and every sidebar count renders *as if* the batch
+ * were already applied — the real writes happen when the defer window closes.
+ */
+export type PendingArchiveBatch = {
+  id: number
+  mode: 'archive' | 'unarchive'
+  /** Epoch ms at which the batch fires unless cancelled. */
+  scheduledAt: number
+  createdAt: number
+  entries: { accountId: string; uid: number; subject: string | null }[]
+}
+
 export type MessagesApi = {
   list: (query: MessagesQuery) => Promise<Message[]>
   get: (accountId: string, uid: number) => Promise<MessageWithBody | null>
@@ -468,10 +483,19 @@ export type MessagesApi = {
   setSeen: (accountId: string, uid: number, seen: boolean) => Promise<void>
   /** Manually assign (or clear, when `categoryId` is null) the category for a message. */
   setCategory: (accountId: string, uid: number, categoryId: string | null) => Promise<void>
-  /** Archive a message: move it out of INBOX upstream and mark it archived locally. */
-  archive: (accountId: string, uid: number) => Promise<void>
-  /** Unarchive: move the message back to INBOX and drop the stale local row. */
-  unarchive: (accountId: string, uid: number) => Promise<void>
+  /**
+   * Enqueue an archive batch. Lists and counts treat the entries as archived
+   * immediately; the real IMAP move fires when the defer window closes,
+   * unless `cancelPendingBatch` lands first. Pass a single entry to archive
+   * one message; pass many for "Archive all" on a category.
+   */
+  archive: (entries: { accountId: string; uid: number }[]) => Promise<PendingArchiveBatch>
+  /** Enqueue an unarchive batch — symmetric to `archive`. */
+  unarchive: (entries: { accountId: string; uid: number }[]) => Promise<PendingArchiveBatch>
+  /** Cancel a pending batch — removes its rows without touching IMAP. */
+  cancelPendingBatch: (batchId: number) => Promise<void>
+  /** Snapshot of batches currently waiting to commit (oldest → newest). */
+  listPendingBatches: () => Promise<PendingArchiveBatch[]>
   /** Send an email via the account's SMTP server. */
   send: (draft: EmailDraft) => Promise<void>
   /** Aggregate counts for sidebar badges. */

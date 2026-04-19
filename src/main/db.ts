@@ -96,6 +96,28 @@ CREATE TABLE IF NOT EXISTS cloud_event_buffer (
   /** Event id so older buffered payloads lose to newer ones on upsert. */
   event_id       INTEGER NOT NULL
 ) WITHOUT ROWID;
+
+-- Pending user-initiated archive / unarchive batches. The message list and
+-- sidebar counts render as if each pending row had already been applied; the
+-- actual IMAP round-trip fires after the defer window (5s) unless the user
+-- undoes the batch. One batch can hold many messages (e.g. "Archive all"),
+-- all committed or cancelled as a unit.
+CREATE TABLE IF NOT EXISTS pending_action_batches (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode         TEXT    NOT NULL CHECK(mode IN ('archive','unarchive')),
+  scheduled_at INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_actions (
+  batch_id   INTEGER NOT NULL REFERENCES pending_action_batches(id) ON DELETE CASCADE,
+  account_id TEXT    NOT NULL,
+  uid        INTEGER NOT NULL,
+  PRIMARY KEY (account_id, uid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_actions_batch
+  ON pending_actions(batch_id);
 `
 
 export function initDb(): Database.Database {
@@ -132,6 +154,27 @@ function migrate(instance: Database.Database): void {
   }
   instance.exec(`CREATE INDEX IF NOT EXISTS idx_messages_category ON messages(category_id)`)
   instance.exec(`CREATE INDEX IF NOT EXISTS idx_messages_archived ON messages(archived_at_ms)`)
+
+  // Drop any stale view (its definition is tied to the pending tables), then
+  // recreate so schema tweaks here are picked up without a manual wipe.
+  instance.exec(`DROP VIEW IF EXISTS messages_effective`)
+  instance.exec(`
+    CREATE VIEW messages_effective AS
+    SELECT m.*,
+      CASE
+        WHEN pab.mode = 'archive' THEN 1
+        WHEN pab.mode = 'unarchive' THEN 0
+        WHEN m.archived_at_ms IS NOT NULL THEN 1
+        ELSE 0
+      END AS effective_archived,
+      pab.mode AS pending_mode,
+      pab.id   AS pending_batch_id
+    FROM messages m
+    LEFT JOIN pending_actions pa
+      ON pa.account_id = m.account_id AND pa.uid = m.uid
+    LEFT JOIN pending_action_batches pab
+      ON pab.id = pa.batch_id
+  `)
 }
 
 export function getDb(): Database.Database {

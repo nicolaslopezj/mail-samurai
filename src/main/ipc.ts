@@ -35,12 +35,13 @@ import {
   testCloudConnection
 } from './cloud-sync'
 import * as contacts from './contacts-store'
-import { archiveMessage, setMessageSeen, unarchiveMessage } from './imap-sync'
+import { setMessageSeen } from './imap-sync'
 import { testImapAuth } from './imap-test'
 import { getLogFilePath, readLogFiles } from './logger'
 import * as macContacts from './mac-contacts'
 import * as messages from './messages-store'
 import { KV_KEYS } from './overlay-store'
+import * as pendingArchive from './pending-archive'
 import * as store from './settings-store'
 import { sendDraft } from './smtp-send'
 import { notifyChanged, reloadInterval, reloadRealtimeSync, triggerSync } from './sync-scheduler'
@@ -333,53 +334,19 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle('messages:archive', async (_event, accountId: string, uid: number) => {
-    messages.setArchivedLocal(accountId, uid, Date.now())
-    notifyChanged(accountId)
-    const list = await accounts.list()
-    const account = list.find((a) => a.id === accountId)
-    if (!account) return
-    try {
-      await archiveMessage(account, uid)
-    } catch (err) {
-      console.error(`[imap] archive uid=${uid} failed:`, err)
-      throw err
-    }
-  })
+  ipcMain.handle('messages:archive', (_event, entries: { accountId: string; uid: number }[]) =>
+    pendingArchive.enqueue(entries, 'archive')
+  )
 
-  ipcMain.handle('messages:unarchive', async (_event, accountId: string, uid: number) => {
-    const messageId = messages.getMessageId(accountId, uid)
-    if (!messageId) throw new Error('Message has no Message-Id; cannot unarchive.')
-    const list = await accounts.list()
-    const account = list.find((a) => a.id === accountId)
-    if (!account) throw new Error('Account not found.')
+  ipcMain.handle('messages:unarchive', (_event, entries: { accountId: string; uid: number }[]) =>
+    pendingArchive.enqueue(entries, 'unarchive')
+  )
 
-    // Optimistic: clear archived_at_ms locally and notify *before* the IMAP
-    // round-trip. The list views flip the message back to its inbox bucket
-    // immediately; the server-side move and UID refresh happen in the
-    // background. Mirrors the archive handler's shape.
-    messages.clearArchivedLocal(accountId, uid)
-    notifyChanged(accountId)
+  ipcMain.handle('messages:cancelPendingBatch', (_event, batchId: number) =>
+    pendingArchive.cancel(batchId)
+  )
 
-    try {
-      await unarchiveMessage(account, messageId)
-    } catch (err) {
-      // Revert the optimistic change so the UI matches reality.
-      messages.setArchivedLocal(accountId, uid, Date.now())
-      notifyChanged(accountId)
-      console.error(`[imap] unarchive uid=${uid} failed:`, err)
-      throw err
-    }
-
-    // The local row still holds the pre-move INBOX UID, which reconcile
-    // would otherwise re-archive on the next sync. Drop it, then trigger a
-    // sync so the message reappears under its fresh INBOX UID. No explicit
-    // notify here — the sync's own `notifyChanged` fires once the upsert
-    // lands, avoiding a transient "message missing" flash between the
-    // delete and the refetch.
-    messages.deleteMessage(accountId, uid)
-    triggerSync(accountId).catch((err) => console.error('[sync] post-unarchive sync failed:', err))
-  })
+  ipcMain.handle('messages:listPendingBatches', () => pendingArchive.list())
 
   ipcMain.handle('messages:send', async (_event, draft: EmailDraft) => {
     const list = await accounts.list()

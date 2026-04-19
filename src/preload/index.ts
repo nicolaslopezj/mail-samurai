@@ -31,6 +31,7 @@ import type {
   MessagesApi,
   MessagesQuery,
   MessageWithBody,
+  PendingArchiveBatch,
   SettingsApi,
   SummaryLanguage,
   SyncApi,
@@ -95,10 +96,14 @@ const messages: MessagesApi = {
     ipcRenderer.invoke('messages:setSeen', accountId, uid, seen) as Promise<void>,
   setCategory: (accountId: string, uid: number, categoryId: string | null) =>
     ipcRenderer.invoke('messages:setCategory', accountId, uid, categoryId) as Promise<void>,
-  archive: (accountId: string, uid: number) =>
-    ipcRenderer.invoke('messages:archive', accountId, uid) as Promise<void>,
-  unarchive: (accountId: string, uid: number) =>
-    ipcRenderer.invoke('messages:unarchive', accountId, uid) as Promise<void>,
+  archive: (entries: { accountId: string; uid: number }[]) =>
+    ipcRenderer.invoke('messages:archive', entries) as Promise<PendingArchiveBatch>,
+  unarchive: (entries: { accountId: string; uid: number }[]) =>
+    ipcRenderer.invoke('messages:unarchive', entries) as Promise<PendingArchiveBatch>,
+  cancelPendingBatch: (batchId: number) =>
+    ipcRenderer.invoke('messages:cancelPendingBatch', batchId) as Promise<void>,
+  listPendingBatches: () =>
+    ipcRenderer.invoke('messages:listPendingBatches') as Promise<PendingArchiveBatch[]>,
   send: (draft: EmailDraft) => ipcRenderer.invoke('messages:send', draft) as Promise<void>,
   counts: () => ipcRenderer.invoke('messages:counts') as Promise<MessageCounts>,
   onChanged: (handler: () => void) => {

@@ -1,6 +1,6 @@
 import type { Account } from '@shared/settings'
-import { useEffect, useState } from 'react'
-import { HashRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import { ComposeDialog } from '@/components/compose-dialog'
 import { MainLayout } from '@/components/main-layout'
@@ -20,6 +20,22 @@ import { SettingsSyncPage } from '@/pages/settings/sync'
 
 function GlobalShortcuts({ onNewMail }: { onNewMail: () => void }): null {
   const navigate = useNavigate()
+  const location = useLocation()
+  const targetsRef = useRef<string[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.settings.get().then((s) => {
+      if (cancelled) return
+      const paths = s.categories.map((c) => `/category/${c.id}`)
+      if (s.allowUncategorized) paths.push('/others')
+      targetsRef.current = paths
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [location.pathname])
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (!(event.metaKey || event.ctrlKey)) return
@@ -32,6 +48,20 @@ function GlobalShortcuts({ onNewMail }: { onNewMail: () => void }): null {
       if (event.key.toLowerCase() === 'n' && !event.shiftKey) {
         event.preventDefault()
         onNewMail()
+        return
+      }
+      if (!event.shiftKey && /^[0-9]$/.test(event.key)) {
+        if (event.key === '0') {
+          event.preventDefault()
+          navigate('/')
+          return
+        }
+        const index = Number(event.key) - 1
+        const path = targetsRef.current[index]
+        if (path) {
+          event.preventDefault()
+          navigate(path)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)

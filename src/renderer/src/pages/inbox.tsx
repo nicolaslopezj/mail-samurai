@@ -4,7 +4,8 @@ import {
   type Category,
   type Message,
   type MessagesQuery,
-  type MessageWithBody
+  type MessageWithBody,
+  type PendingArchiveBatch
 } from '@shared/settings'
 import {
   ArchiveIcon,
@@ -47,14 +48,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 type ReaderShortcut = 'archive' | 'unarchive' | 'replyAll' | 'forward' | 'replyAllWithAi'
-
-type PendingArchive = {
-  entries: { accountId: string; uid: number }[]
-  mode: 'archive' | 'unarchive'
-  timeoutId: ReturnType<typeof setTimeout>
-  toastId: string | number
-  selectionBefore: { accountId: string; uid: number } | null
-}
 
 function formatDate(ms: number): string {
   const d = new Date(ms)
@@ -203,30 +196,21 @@ export function InboxPage({
         : accountId
           ? `${accountLabel} · Inbox`
           : 'All Inboxes'
-  // Deferred archive queue. Actions land in the UI instantly (selection
-  // moves, messages are hidden) but the IPC call is held back for
-  // `ARCHIVE_DEFER_MS` so the user can undo with Cmd+Z or the toast button
-  // without any IMAP churn. At most one batch is pending at a time — a new
-  // archive while one is pending flushes the previous one immediately.
-  const pendingArchiveRef = useRef<PendingArchive | null>(null)
-  const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null)
-
-  const pendingKeys = useMemo(() => {
-    const set = new Set<string>()
-    if (pendingArchive) {
-      for (const e of pendingArchive.entries) set.add(`${e.accountId}:${e.uid}`)
-    }
-    return set
-  }, [pendingArchive])
+  // Pending archive/unarchive batches live in the main process (DB-backed),
+  // so the list and the sidebar both render the "as-if-applied" state via the
+  // same query. The renderer only tracks the currently-undoable batch id and
+  // its toast so Cmd+Z and the Undo button have something to target.
+  const activeBatchRef = useRef<{
+    batchId: number
+    toastId: string | number
+    selectionBefore: { accountId: string; uid: number } | null
+  } | null>(null)
 
   const visibleMessages = useMemo(() => {
     if (!messages) return null
-    const hasPending = pendingKeys.size > 0
-    let list = messages
-    if (hasPending) list = list.filter((m) => !pendingKeys.has(`${m.accountId}:${m.uid}`))
-    if (unreadOnly) list = list.filter((m) => !m.seen)
-    return list
-  }, [messages, unreadOnly, pendingKeys])
+    if (!unreadOnly) return messages
+    return messages.filter((m) => !m.seen)
+  }, [messages, unreadOnly])
   const selectedIndex = useMemo(() => {
     if (!visibleMessages || !selected) return -1
     return visibleMessages.findIndex(
@@ -255,83 +239,66 @@ export function InboxPage({
     [visibleMessages]
   )
 
-  const fireArchiveActions = useCallback(
-    (entries: { accountId: string; uid: number }[], mode: 'archive' | 'unarchive') => {
-      for (const entry of entries) {
-        const call =
-          mode === 'archive'
-            ? window.api.messages.archive(entry.accountId, entry.uid)
-            : window.api.messages.unarchive(entry.accountId, entry.uid)
-        call.catch((err) => {
-          console.error(`${mode} uid=${entry.uid} failed:`, err)
-          toast.error(mode === 'archive' ? 'Archive failed' : 'Unarchive failed')
-          loadMessages()
-        })
-      }
-    },
-    [loadMessages]
-  )
-
-  const commitPendingArchive = useCallback((): void => {
-    const p = pendingArchiveRef.current
-    if (!p) return
-    clearTimeout(p.timeoutId)
-    toast.dismiss(p.toastId)
-    pendingArchiveRef.current = null
-    setPendingArchive(null)
-    fireArchiveActions(p.entries, p.mode)
-  }, [fireArchiveActions])
-
-  const undoPendingArchive = useCallback((): void => {
-    const p = pendingArchiveRef.current
-    if (!p) return
-    clearTimeout(p.timeoutId)
-    toast.dismiss(p.toastId)
-    pendingArchiveRef.current = null
-    setPendingArchive(null)
-    if (p.selectionBefore) setSelected(p.selectionBefore)
+  const undoActiveBatch = useCallback((): void => {
+    const active = activeBatchRef.current
+    if (!active) return
+    activeBatchRef.current = null
+    toast.dismiss(active.toastId)
+    if (active.selectionBefore) setSelected(active.selectionBefore)
+    window.api.messages.cancelPendingBatch(active.batchId).catch((err) => {
+      console.error('cancelPendingBatch failed:', err)
+    })
   }, [])
 
   const enqueueArchive = useCallback(
-    (
-      entries: { accountId: string; uid: number; subject: string | null }[],
+    async (
       mode: 'archive' | 'unarchive',
+      entries: { accountId: string; uid: number; subject: string | null }[],
       selectionBefore: { accountId: string; uid: number } | null
-    ) => {
+    ): Promise<void> => {
       if (entries.length === 0) return
-      // Flush any previous pending batch — undo window for older actions
-      // closes as soon as the user takes a new one.
-      commitPendingArchive()
 
-      const ARCHIVE_DEFER_MS = 5000
-      const label = mode === 'archive' ? 'Archived' : 'Moved to inbox'
-      const description =
-        entries.length === 1 ? entries[0].subject || '(no subject)' : `${entries.length} messages`
+      // Any previous toast becomes stale the moment a new batch lands — the
+      // main process auto-commits it on enqueue (single-batch model).
+      const previousToast = activeBatchRef.current?.toastId
+      activeBatchRef.current = null
+      if (previousToast !== undefined) toast.dismiss(previousToast)
 
-      const stripped = entries.map((e) => ({ accountId: e.accountId, uid: e.uid }))
-      const timeoutId = setTimeout(() => {
-        commitPendingArchive()
-      }, ARCHIVE_DEFER_MS)
-      const toastId = toast(label, {
-        description,
-        duration: ARCHIVE_DEFER_MS,
-        action: {
-          label: 'Undo',
-          onClick: () => undoPendingArchive()
-        }
-      })
+      try {
+        const entriesArg = entries.map((e) => ({ accountId: e.accountId, uid: e.uid }))
+        const call =
+          mode === 'archive'
+            ? window.api.messages.archive(entriesArg)
+            : window.api.messages.unarchive(entriesArg)
+        const batch: PendingArchiveBatch = await call
 
-      const pending: PendingArchive = {
-        entries: stripped,
-        mode,
-        timeoutId,
-        toastId,
-        selectionBefore
+        const label = mode === 'archive' ? 'Archived' : 'Moved to inbox'
+        const description =
+          entries.length === 1 ? entries[0].subject || '(no subject)' : `${entries.length} messages`
+        const duration = Math.max(1000, batch.scheduledAt - Date.now())
+        const toastId = toast(label, {
+          description,
+          duration,
+          action: {
+            label: 'Undo',
+            onClick: () => undoActiveBatch()
+          },
+          onAutoClose: () => {
+            // The main-process timer has fired by now; clear the ref so a
+            // later Cmd+Z doesn't fire a no-op cancel for a committed batch.
+            if (activeBatchRef.current?.batchId === batch.id) {
+              activeBatchRef.current = null
+            }
+          }
+        })
+
+        activeBatchRef.current = { batchId: batch.id, toastId, selectionBefore }
+      } catch (err) {
+        console.error(`${mode} enqueue failed:`, err)
+        toast.error(mode === 'archive' ? 'Archive failed' : 'Unarchive failed')
       }
-      pendingArchiveRef.current = pending
-      setPendingArchive(pending)
     },
-    [commitPendingArchive, undoPendingArchive]
+    [undoActiveBatch]
   )
 
   const handleArchiveAction = useCallback(
@@ -343,9 +310,8 @@ export function InboxPage({
       if (action === 'archive' && wasArchived) return
       if (action === 'unarchive' && !wasArchived) return
 
-      // Move selection to a neighbor before the message disappears from the
-      // filtered list, so the reader pane lands on something instead of
-      // going blank.
+      // Move selection to a neighbor before the list refetch drops this
+      // message, so the reader pane lands on something instead of going blank.
       const selectionBefore = selected
       if (visibleMessages) {
         const idx = visibleMessages.findIndex(
@@ -357,9 +323,9 @@ export function InboxPage({
         }
       }
 
-      enqueueArchive(
-        [{ accountId: message.accountId, uid: message.uid, subject: message.subject ?? null }],
+      void enqueueArchive(
         action,
+        [{ accountId: message.accountId, uid: message.uid, subject: message.subject ?? null }],
         selectionBefore
       )
     },
@@ -372,9 +338,9 @@ export function InboxPage({
     if (targets.length === 0) return
     const selectionBefore = selected
     setSelected(null)
-    enqueueArchive(
-      targets.map((m) => ({ accountId: m.accountId, uid: m.uid, subject: m.subject })),
+    void enqueueArchive(
       'archive',
+      targets.map((m) => ({ accountId: m.accountId, uid: m.uid, subject: m.subject })),
       selectionBefore
     )
   }, [visibleMessages, selected, enqueueArchive])
@@ -385,25 +351,13 @@ export function InboxPage({
       if (!(event.metaKey || event.ctrlKey)) return
       if (event.shiftKey || event.altKey) return
       if (isEditableTarget(event.target)) return
-      if (!pendingArchiveRef.current) return
+      if (!activeBatchRef.current) return
       event.preventDefault()
-      undoPendingArchive()
+      undoActiveBatch()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undoPendingArchive])
-
-  // Commit any still-pending archive when the page unmounts so we don't
-  // silently drop the user's action on navigation.
-  useEffect(() => {
-    return () => {
-      const p = pendingArchiveRef.current
-      if (!p) return
-      clearTimeout(p.timeoutId)
-      pendingArchiveRef.current = null
-      fireArchiveActions(p.entries, p.mode)
-    }
-  }, [fireArchiveActions])
+  }, [undoActiveBatch])
 
   const handleListKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {

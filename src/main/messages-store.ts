@@ -79,13 +79,17 @@ function rowToMessage(row: MessageRow): Message {
  * messages (the Inbox bucket — messages stay there until archived, regardless
  * of AI categorization). "Other" counts unread messages the AI reviewed but
  * didn't match any category.
+ *
+ * Every clause queries the `messages_effective` view so pending
+ * archive/unarchive batches render as if they had already been applied —
+ * sidebar, list, and reader stay in sync during the undo window.
  */
 export function getCounts(): MessageCounts {
   const db = getDb()
   const inboxRows = db
     .prepare(
-      `SELECT account_id, COUNT(*) AS n FROM messages
-       WHERE seen = 0 AND archived_at_ms IS NULL
+      `SELECT account_id, COUNT(*) AS n FROM messages_effective
+       WHERE seen = 0 AND effective_archived = 0
        GROUP BY account_id`
     )
     .all() as { account_id: string; n: number }[]
@@ -97,8 +101,8 @@ export function getCounts(): MessageCounts {
   }
   const categoryRows = db
     .prepare(
-      `SELECT category_id, COUNT(*) AS n FROM messages
-       WHERE seen = 0 AND category_id IS NOT NULL AND archived_at_ms IS NULL
+      `SELECT category_id, COUNT(*) AS n FROM messages_effective
+       WHERE seen = 0 AND category_id IS NOT NULL AND effective_archived = 0
        GROUP BY category_id`
     )
     .all() as { category_id: string; n: number }[]
@@ -106,8 +110,8 @@ export function getCounts(): MessageCounts {
   for (const r of categoryRows) categoryUnread[r.category_id] = r.n
   const categoryTotalRows = db
     .prepare(
-      `SELECT category_id, COUNT(*) AS n FROM messages
-       WHERE category_id IS NOT NULL AND archived_at_ms IS NULL
+      `SELECT category_id, COUNT(*) AS n FROM messages_effective
+       WHERE category_id IS NOT NULL AND effective_archived = 0
        GROUP BY category_id`
     )
     .all() as { category_id: string; n: number }[]
@@ -115,17 +119,17 @@ export function getCounts(): MessageCounts {
   for (const r of categoryTotalRows) categoryTotal[r.category_id] = r.n
   const otherRow = db
     .prepare(
-      `SELECT COUNT(*) AS n FROM messages
+      `SELECT COUNT(*) AS n FROM messages_effective
        WHERE seen = 0 AND category_id IS NULL AND categorized_at IS NOT NULL
-         AND archived_at_ms IS NULL`
+         AND effective_archived = 0`
     )
     .get() as { n: number }
   const otherUnread = otherRow.n
   const otherTotalRow = db
     .prepare(
-      `SELECT COUNT(*) AS n FROM messages
+      `SELECT COUNT(*) AS n FROM messages_effective
        WHERE category_id IS NULL AND categorized_at IS NOT NULL
-         AND archived_at_ms IS NULL`
+         AND effective_archived = 0`
     )
     .get() as { n: number }
   const otherTotal = otherTotalRow.n
@@ -133,8 +137,8 @@ export function getCounts(): MessageCounts {
   let archiveUnreadTotal = 0
   const archiveRows = db
     .prepare(
-      `SELECT account_id, COUNT(*) AS n FROM messages
-       WHERE seen = 0 AND archived_at_ms IS NOT NULL
+      `SELECT account_id, COUNT(*) AS n FROM messages_effective
+       WHERE seen = 0 AND effective_archived = 1
        GROUP BY account_id`
     )
     .all() as { account_id: string; n: number }[]
@@ -165,18 +169,18 @@ export function listMessages(query: MessagesQuery): Message[] {
   }
   if (query.categoryId) {
     where.push('category_id = ?')
-    where.push('archived_at_ms IS NULL')
+    where.push('effective_archived = 0')
     params.push(query.categoryId)
   } else if (query.inbox) {
-    where.push('archived_at_ms IS NULL')
+    where.push('effective_archived = 0')
   } else if (query.other) {
-    where.push('category_id IS NULL AND categorized_at IS NOT NULL AND archived_at_ms IS NULL')
+    where.push('category_id IS NULL AND categorized_at IS NOT NULL AND effective_archived = 0')
   } else if (query.archived) {
-    where.push('archived_at_ms IS NOT NULL')
+    where.push('effective_archived = 1')
   }
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
   const rows = db
-    .prepare(`SELECT * FROM messages ${whereSql} ORDER BY date_ms DESC LIMIT ?`)
+    .prepare(`SELECT * FROM messages_effective ${whereSql} ORDER BY date_ms DESC LIMIT ?`)
     .all(...params, limit) as MessageRow[]
   return rows.map(rowToMessage)
 }
