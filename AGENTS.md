@@ -54,8 +54,32 @@ Import aliases (configured in `tsconfig.web.json` + `electron.vite.config.ts`):
 | `npm run typecheck` | Node + web tsc projects                           |
 | `npm run build`     | typecheck + `electron-vite build`                 |
 | `npm run build:mac` | package unsigned `.dmg`                           |
+| `./release.sh <version>` | bump version, commit, tag, push, sign, notarize, and publish release |
 | `npm run agent:serve` | build + launch persistent agent-controlled Electron |
 | `npm run agent`     | run the agent CLI (`node agent/cli.mjs`)          |
+
+## Releases
+
+Releases are done through the repo script, not by manually stitching commands together:
+
+```bash
+./release.sh 1.3.0
+```
+
+What it does:
+
+- verifies you're on `main`
+- requires a clean git worktree
+- updates `package.json` + `package-lock.json` to the requested version
+- runs `npm run typecheck:node`
+- creates the release commit and git tag
+- pushes `main` and the new tag
+- runs the signed/notarized/published macOS release flow
+
+Prerequisites:
+
+- `.signing/release.env` must exist and contain the Apple/GitHub release credentials
+- the requested tag must not already exist locally or on `origin`
 
 ## How Codex controls the app
 
