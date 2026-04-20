@@ -22,7 +22,7 @@ type NativeModule = {
 let nativeCache: NativeModule | null | undefined
 
 function runtimeContext(): string {
-  return `bundleId=${app.getBundleID() || 'unknown'} packaged=${app.isPackaged} platform=${process.platform} arch=${process.arch}`
+  return `app=${app.getName()} packaged=${app.isPackaged} platform=${process.platform} arch=${process.arch}`
 }
 
 function getNative(): NativeModule | null {

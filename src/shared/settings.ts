@@ -16,6 +16,8 @@ export type AiModel = {
  * `syncFromMs` are kept indefinitely — this only bounds archived copies.
  */
 export const ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+export const PENDING_ARCHIVE_DEFER_MS = 5_000
+export const PENDING_ARCHIVE_STALE_MS = 20_000
 
 export const POLL_DEFAULT_MINUTES = 15
 export const POLL_MIN_MINUTES = 1
@@ -465,7 +467,9 @@ export type EmailDraft = {
  * A user-initiated archive / unarchive batch that's parked for a few seconds
  * so Cmd+Z (or the toast's Undo button) can cancel it before anything hits
  * IMAP. Every list view and every sidebar count renders *as if* the batch
- * were already applied — the real writes happen when the defer window closes.
+ * were already applied by overlaying this queue on top of the real IMAP-backed
+ * `archivedAt` state. Stale queued actions older than
+ * `PENDING_ARCHIVE_STALE_MS` are ignored and later cleaned up.
  */
 export type PendingArchiveBatch = {
   id: number

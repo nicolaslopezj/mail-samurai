@@ -15,7 +15,11 @@
  * the view instead of re-implementing the logic.
  */
 
-import type { PendingArchiveBatch } from '../shared/settings'
+import {
+  PENDING_ARCHIVE_DEFER_MS,
+  PENDING_ARCHIVE_STALE_MS,
+  type PendingArchiveBatch
+} from '../shared/settings'
 import { list as listAccounts } from './accounts-store'
 import { getDb } from './db'
 import { archiveMessage, unarchiveMessage } from './imap-sync'
@@ -23,7 +27,7 @@ import { clearArchivedLocal, deleteMessage, getMessageId, setArchivedLocal } fro
 import { notifyChanged, triggerSync } from './sync-scheduler'
 
 /** How long the UI holds a batch before the real IMAP call fires. */
-export const PENDING_DEFER_MS = 5000
+export const PENDING_DEFER_MS = PENDING_ARCHIVE_DEFER_MS
 
 type Mode = 'archive' | 'unarchive'
 
@@ -50,11 +54,8 @@ type ActionRow = {
  * so the app has a chance to finish booting before the IMAP round-trip).
  */
 export function initPendingArchive(): void {
-  const db = getDb()
-  const rows = db.prepare(`SELECT id, scheduled_at FROM pending_action_batches`).all() as {
-    id: number
-    scheduled_at: number
-  }[]
+  pruneExpiredBatches()
+  const rows = listBatchRows()
   const now = Date.now()
   for (const row of rows) {
     const delay = Math.max(0, row.scheduled_at - now)
@@ -70,12 +71,8 @@ export function enqueue(
     throw new Error('enqueuePendingArchive requires at least one entry')
   }
 
-  // Single-batch model: any previously-queued batches get committed
-  // immediately when the user kicks off a new one. Simpler UX (one undo
-  // window at a time) and avoids stacking toasts the user has to chase.
-  commitAllNow()
-
   const db = getDb()
+  pruneExpiredBatches()
   const now = Date.now()
   const scheduledAt = now + PENDING_DEFER_MS
 
@@ -91,13 +88,14 @@ export function enqueue(
       `INSERT INTO pending_actions (batch_id, account_id, uid) VALUES (?, ?, ?)`
     )
     // ON CONFLICT? The PRIMARY KEY is (account_id, uid), so re-enqueuing the
-    // same row would violate it. In practice this can't happen — commitAllNow
-    // just cleared every row — but keep the defensive DELETE to be safe.
+    // same row would violate it. Replace any older queued intent for this
+    // message so one message has exactly one queued archive state at a time.
     const dropDup = db.prepare(`DELETE FROM pending_actions WHERE account_id = ? AND uid = ?`)
     for (const entry of entries) {
       dropDup.run(entry.accountId, entry.uid)
       insertAction.run(id, entry.accountId, entry.uid)
     }
+    deleteEmptyBatches()
     return id
   })()
 
@@ -110,6 +108,7 @@ export function enqueue(
 }
 
 export function cancel(batchId: number): boolean {
+  pruneExpiredBatches()
   const timer = timers.get(batchId)
   if (timer) {
     clearTimeout(timer)
@@ -126,14 +125,9 @@ export function cancel(batchId: number): boolean {
 }
 
 export function list(): PendingArchiveBatch[] {
+  pruneExpiredBatches()
   const db = getDb()
-  const batchRows = db
-    .prepare(
-      `SELECT id, mode, scheduled_at, created_at
-       FROM pending_action_batches
-       ORDER BY id ASC`
-    )
-    .all() as BatchRow[]
+  const batchRows = listBatchRows()
   if (batchRows.length === 0) return []
   const actionRows = db
     .prepare(
@@ -162,6 +156,7 @@ export function list(): PendingArchiveBatch[] {
 }
 
 function readBatch(batchId: number): PendingArchiveBatch | null {
+  pruneExpiredBatches()
   const db = getDb()
   const batchRow = db
     .prepare(
@@ -202,86 +197,164 @@ function scheduleBatch(batchId: number, delayMs: number): void {
   timers.set(batchId, timer)
 }
 
-function commitAllNow(): void {
+function listBatchRows(): BatchRow[] {
   const db = getDb()
-  const ids = db.prepare(`SELECT id FROM pending_action_batches`).all() as {
+  return db
+    .prepare(
+      `SELECT id, mode, scheduled_at, created_at
+       FROM pending_action_batches
+       ORDER BY id ASC`
+    )
+    .all() as BatchRow[]
+}
+
+function listStaleBatchIds(now = Date.now()): number[] {
+  const db = getDb()
+  const rows = db
+    .prepare(`SELECT id FROM pending_action_batches WHERE created_at < ? ORDER BY id ASC`)
+    .all(now - PENDING_ARCHIVE_STALE_MS) as {
     id: number
   }[]
+  return rows.map((row) => row.id)
+}
+
+function isBatchStale(batch: Pick<BatchRow, 'created_at'>, now = Date.now()): boolean {
+  return batch.created_at < now - PENDING_ARCHIVE_STALE_MS
+}
+
+function pruneExpiredBatches(): number {
+  const staleIds = listStaleBatchIds()
+  if (staleIds.length === 0) return 0
+  const db = getDb()
+  db.transaction(() => {
+    const deleteActions = db.prepare(`DELETE FROM pending_actions WHERE batch_id = ?`)
+    const deleteBatch = db.prepare(`DELETE FROM pending_action_batches WHERE id = ?`)
+    for (const id of staleIds) {
+      const timer = timers.get(id)
+      if (timer) {
+        clearTimeout(timer)
+        timers.delete(id)
+      }
+      deleteActions.run(id)
+      deleteBatch.run(id)
+    }
+  })()
+  notifyChanged()
+  return staleIds.length
+}
+
+function deleteEmptyBatches(): void {
+  const db = getDb()
+  const ids = db
+    .prepare(
+      `SELECT pab.id
+       FROM pending_action_batches pab
+       LEFT JOIN pending_actions pa ON pa.batch_id = pab.id
+       GROUP BY pab.id
+       HAVING COUNT(pa.batch_id) = 0`
+    )
+    .all() as { id: number }[]
+  if (ids.length === 0) return
+  const deleteBatch = db.prepare(`DELETE FROM pending_action_batches WHERE id = ?`)
   for (const { id } of ids) {
     const timer = timers.get(id)
     if (timer) {
       clearTimeout(timer)
       timers.delete(id)
     }
-    void commitBatch(id)
+    deleteBatch.run(id)
   }
 }
 
-async function commitBatch(batchId: number): Promise<void> {
-  const batch = readBatch(batchId)
-  if (!batch) return // already cancelled
-
+function deleteBatch(batchId: number): void {
   const db = getDb()
-  // Drop pending rows first so the view flips to the "already applied" state
-  // before we start the IMAP round-trip. The actual archived_at_ms update
-  // happens a line below — both are atomic for the user because `notifyChanged`
-  // fires once after both writes.
-  const now = Date.now()
   db.transaction(() => {
     db.prepare(`DELETE FROM pending_actions WHERE batch_id = ?`).run(batchId)
     db.prepare(`DELETE FROM pending_action_batches WHERE id = ?`).run(batchId)
-    for (const entry of batch.entries) {
-      if (batch.mode === 'archive') {
-        setArchivedLocal(entry.accountId, entry.uid, now)
-      } else {
-        clearArchivedLocal(entry.accountId, entry.uid)
-      }
-    }
   })()
-  notifyChanged()
+}
 
+async function commitArchiveBatch(batch: PendingArchiveBatch): Promise<void> {
   const accountList = await listAccounts()
   const accountById = new Map(accountList.map((a) => [a.id, a]))
+  const movedEntries: typeof batch.entries = []
+  const affectedAccounts = new Set<string>()
+
+  for (const entry of batch.entries) {
+    const account = accountById.get(entry.accountId)
+    if (!account) continue
+    affectedAccounts.add(entry.accountId)
+    try {
+      await archiveMessage(account, entry.uid)
+      movedEntries.push(entry)
+    } catch (err) {
+      console.error(`[pending] archive uid=${entry.uid} failed:`, err)
+    }
+  }
+
+  const syncFailures = new Set<string>()
+  for (const accountId of affectedAccounts) {
+    try {
+      await triggerSync(accountId)
+    } catch (err) {
+      syncFailures.add(accountId)
+      console.error('[pending] post-archive sync failed:', err)
+    }
+  }
+
+  // If the IMAP move succeeded but the confirmatory sync failed, preserve the
+  // local archived flag as a fallback so the UI does not bounce the message
+  // back into Inbox until the next sync catches up.
+  if (syncFailures.size > 0) {
+    const now = Date.now()
+    for (const entry of movedEntries) {
+      if (syncFailures.has(entry.accountId)) {
+        setArchivedLocal(entry.accountId, entry.uid, now)
+      }
+    }
+  }
+
+  deleteBatch(batch.id)
+  notifyChanged()
+}
+
+async function commitUnarchiveBatch(batch: PendingArchiveBatch): Promise<void> {
+  const accountList = await listAccounts()
+  const accountById = new Map(accountList.map((a) => [a.id, a]))
+  const now = Date.now()
 
   // Snapshot message-ids for unarchive *before* the IMAP round-trip. The
   // post-move cleanup deletes the local row (its UID is stale), so reading
   // the id after would return null.
   const unarchiveMessageIds = new Map<string, string>()
-  if (batch.mode === 'unarchive') {
-    for (const entry of batch.entries) {
-      const id = getMessageId(entry.accountId, entry.uid)
-      if (id) unarchiveMessageIds.set(`${entry.accountId}:${entry.uid}`, id)
-    }
+  for (const entry of batch.entries) {
+    const id = getMessageId(entry.accountId, entry.uid)
+    if (id) unarchiveMessageIds.set(`${entry.accountId}:${entry.uid}`, id)
   }
 
   const affectedAccounts = new Set<string>()
+  deleteBatch(batch.id)
+  applyUnarchiveLocal(batch)
+  notifyChanged()
+
   for (const entry of batch.entries) {
     const account = accountById.get(entry.accountId)
     if (!account) continue
     try {
-      if (batch.mode === 'archive') {
-        await archiveMessage(account, entry.uid)
-      } else {
-        const messageId = unarchiveMessageIds.get(`${entry.accountId}:${entry.uid}`)
-        if (!messageId) {
-          console.error(`[pending] unarchive skipped — no message-id for uid=${entry.uid}`)
-          continue
-        }
-        await unarchiveMessage(account, messageId)
-        // The local row still holds the pre-move INBOX UID; reconcile would
-        // re-archive it on the next pass. Drop it; the post-loop triggerSync
-        // refetches it under its fresh UID.
-        deleteMessage(entry.accountId, entry.uid)
-        affectedAccounts.add(entry.accountId)
+      const messageId = unarchiveMessageIds.get(`${entry.accountId}:${entry.uid}`)
+      if (!messageId) {
+        console.error(`[pending] unarchive skipped — no message-id for uid=${entry.uid}`)
+        continue
       }
+      await unarchiveMessage(account, messageId)
+      // The local row still holds the pre-move INBOX UID; reconcile would
+      // re-archive it on the next pass. Drop it; the post-loop triggerSync
+      // refetches it under its fresh UID.
+      deleteMessage(entry.accountId, entry.uid)
+      affectedAccounts.add(entry.accountId)
     } catch (err) {
-      console.error(`[pending] ${batch.mode} uid=${entry.uid} failed — reverting local:`, err)
-      // Revert the local state so the list matches reality after a failure.
-      if (batch.mode === 'archive') {
-        clearArchivedLocal(entry.accountId, entry.uid)
-      } else {
-        setArchivedLocal(entry.accountId, entry.uid, now)
-      }
+      console.error(`[pending] unarchive uid=${entry.uid} failed — reverting local:`, err)
+      setArchivedLocal(entry.accountId, entry.uid, now)
       notifyChanged(entry.accountId)
     }
   }
@@ -291,4 +364,31 @@ async function commitBatch(batchId: number): Promise<void> {
       console.error('[pending] post-unarchive sync failed:', err)
     )
   }
+}
+
+function applyUnarchiveLocal(batch: PendingArchiveBatch): void {
+  const db = getDb()
+  db.transaction(() => {
+    for (const entry of batch.entries) {
+      clearArchivedLocal(entry.accountId, entry.uid)
+    }
+  })()
+}
+
+async function commitBatch(batchId: number): Promise<void> {
+  pruneExpiredBatches()
+  const batch = readBatch(batchId)
+  if (!batch) return // already cancelled
+  if (isBatchStale({ created_at: batch.createdAt })) {
+    deleteBatch(batch.id)
+    notifyChanged()
+    return
+  }
+
+  if (batch.mode === 'archive') {
+    await commitArchiveBatch(batch)
+    return
+  }
+
+  await commitUnarchiveBatch(batch)
 }

@@ -123,6 +123,7 @@ export function InboxPage({
   const listRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef(new Map<string, HTMLButtonElement>())
   const shouldFocusSelectedRef = useRef(false)
+  const lastRevealedSelectedKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     isMountedRef.current = true
@@ -465,15 +466,27 @@ export function InboxPage({
   }, [visibleMessages, selectedIndex, handleArchiveAction])
 
   useEffect(() => {
+    if (selected === null) {
+      lastRevealedSelectedKeyRef.current = null
+    }
+  }, [selected])
+
+  useEffect(() => {
     if (!visibleMessages || visibleMessages.length === 0 || selectedIndex < 0) return
     const selectedMessage = visibleMessages[selectedIndex]
     const selectedKey = `${selectedMessage.accountId}:${selectedMessage.uidValidity}:${selectedMessage.uid}`
+    const selectionChanged = lastRevealedSelectedKeyRef.current !== selectedKey
+    if (!selectionChanged && !shouldFocusSelectedRef.current) return
+
     const selectedItem = itemRefs.current.get(selectedKey)
+    if (!selectedItem) return
+
+    lastRevealedSelectedKeyRef.current = selectedKey
     if (shouldFocusSelectedRef.current) {
-      selectedItem?.focus()
+      selectedItem.focus()
       shouldFocusSelectedRef.current = false
     }
-    selectedItem?.scrollIntoView({ block: 'nearest' })
+    selectedItem.scrollIntoView({ block: 'nearest' })
   }, [visibleMessages, selectedIndex])
 
   return (

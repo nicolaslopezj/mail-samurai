@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { app } from 'electron'
+import { PENDING_ARCHIVE_STALE_MS } from '../shared/settings'
 
 let db: Database.Database | null = null
 
@@ -174,6 +175,7 @@ function migrate(instance: Database.Database): void {
       ON pa.account_id = m.account_id AND pa.uid = m.uid
     LEFT JOIN pending_action_batches pab
       ON pab.id = pa.batch_id
+     AND pab.created_at >= CAST(strftime('%s', 'now') AS INTEGER) * 1000 - ${PENDING_ARCHIVE_STALE_MS}
   `)
 }
 

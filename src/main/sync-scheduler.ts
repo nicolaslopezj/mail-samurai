@@ -180,7 +180,7 @@ async function runRealtimeWorker(worker: RealtimeWorker): Promise<void> {
               flags: true
             })
             const uid = fetched && typeof fetched.uid === 'number' ? fetched.uid : null
-            const flags = fetched?.flags ? fetched.flags : data.flags
+            const flags = fetched && fetched.flags ? fetched.flags : data.flags
             if (uid !== null) {
               const applied = await applyRemoteFlagUpdate(worker, uid, flags)
               if (applied) return
